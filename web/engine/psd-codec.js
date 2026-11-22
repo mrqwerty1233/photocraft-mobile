@@ -30,7 +30,7 @@ export class PsdCodec {
    * Encode a ProStudio Mobile document into a binary Adobe Photoshop .PSD (8BPS) Uint8Array.
    * Writes both the multi-layer Layer & Mask Information section and the composite Image Data section.
    */
-  static encodePsd(doc, compositeCanvas) {
+  static encodePsd(doc, compositeCanvas = doc.compositeCanvas) {
     const width = doc.width;
     const height = doc.height;
     const exportLayers = doc.layers.map((layer) => {
@@ -38,13 +38,23 @@ export class PsdCodec {
       c.width = width;
       c.height = height;
       const ctx = c.getContext('2d');
+      const prevVis = layer.visible;
+      const prevOp = layer.opacity;
+      const prevBm = layer.blendMode;
+      layer.visible = true;
+      layer.opacity = 1.0;
+      layer.blendMode = 'source-over';
       doc.renderSingleLayerToContext(layer, ctx, false);
+      layer.visible = prevVis;
+      layer.opacity = prevOp;
+      layer.blendMode = prevBm;
       const imgData = ctx.getImageData(0, 0, width, height).data;
       return {
         name: layer.name || 'Layer',
-        opacity: Math.round((layer.opacity ?? 1) * 255),
-        visible: layer.visible !== false,
-        blendMode: BLEND_TO_PSD[layer.blendMode] || 'norm',
+        opacity: Math.round((prevOp ?? 1) * 255),
+        visible: prevVis !== false,
+        clipping: Boolean(layer.clipping),
+        blendMode: BLEND_TO_PSD[prevBm] || 'norm',
         pixels: imgData
       };
     });
@@ -100,9 +110,9 @@ export class PsdCodec {
       for (let i = 0; i < 4; i++) recArr[off + i] = bmKey.charCodeAt(i);
       off += 4;
 
-      // Opacity (0..255), Clipping (0), Flags (bit 1 =not visible), Filler (0)
+      // Opacity (0..255), Clipping (0=base, 1=non-base), Flags (bit 1 =not visible), Filler (0)
       recView.setUint8(off, lyr.opacity); off += 1;
-      recView.setUint8(off, 0); off += 1;
+      recView.setUint8(off, lyr.clipping ? 1 : 0); off += 1;
       recView.setUint8(off, lyr.visible ? 0x00 : 0x02); off += 1;
       recView.setUint8(off, 0); off += 1;
 

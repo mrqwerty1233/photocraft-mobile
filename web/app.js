@@ -233,6 +233,13 @@ class ProStudioMobileApp {
     this.cropAspect = 'free';
     this.cropGridMode = 'thirds';
     this.cropAngle = 0;
+    this.cropDeletePixels = true;
+
+    // Move & Free Transform Scaler State (Photoshop CC exact defaults)
+    this.transformLockAspect = true;
+    this.moveAutoSelect = true;
+    this.activeSmartGuides = [];
+    this._cachedTransformBounds = null;
 
     this.perspectiveQuad = null;
     this.perspectiveShowGrid = true;
@@ -273,6 +280,7 @@ class ProStudioMobileApp {
     this.initRightLayersDrawer();
     this.initToolbarFreeFloatDrag();
     this.initPinnedToolButtons();
+    this.initKeyboardShortcuts();
     this.applyWorkspaceSettings();
     this.restorePersistedFonts();
     this.loadDocument(SampleProjects.createOceanWaveProject(), false);
@@ -505,6 +513,121 @@ class ProStudioMobileApp {
     });
   }
 
+  initKeyboardShortcuts() {
+    window.addEventListener('keydown', (e) => {
+      const tag = (e.target?.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target?.isContentEditable) return;
+      if (this.inlineTextSession) return;
+      const modalOpen = !document.getElementById('modal-overlay')?.hidden;
+      const ndOpen = !document.getElementById('new-doc-overlay')?.hidden;
+      if (modalOpen) {
+        if (e.key === 'Escape') this.closeModal();
+        return;
+      }
+      if (ndOpen) {
+        if (e.key === 'Escape') this.newDocScreen?.close();
+        return;
+      }
+
+      const mod = e.ctrlKey || e.metaKey;
+      const k = e.key.toLowerCase();
+
+      if (mod && k === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          if (this.session.doc?.canRedo()) this.session.dispatch('edit.redo');
+        } else if (this.session.doc?.canUndo()) {
+          this.session.dispatch('edit.undo');
+        }
+        return;
+      }
+      if (mod && k === 'y') {
+        e.preventDefault();
+        if (this.session.doc?.canRedo()) this.session.dispatch('edit.redo');
+        return;
+      }
+      if (mod && k === 'd') {
+        e.preventDefault();
+        this.session.dispatch('selection.deselect');
+        return;
+      }
+      if (mod && k === 'a') {
+        e.preventDefault();
+        this.session.dispatch('selection.all');
+        return;
+      }
+      if (mod && k === 't') {
+        e.preventDefault();
+        this.selectTool('move');
+        return;
+      }
+      if (mod && k === 'j') {
+        e.preventDefault();
+        this.session.dispatch('layer.viaCopy');
+        return;
+      }
+
+      if (e.key === 'Enter') {
+        if (this.activeTool === 'crop' && this.cropBox) {
+          e.preventDefault();
+          this.commitCropAction();
+          return;
+        }
+        if (this.activeTool === 'perspectiveCrop' && this.perspectiveQuad) {
+          e.preventDefault();
+          this.commitPerspectiveCropAction();
+          return;
+        }
+      }
+
+      if (e.key === 'Escape') {
+        if (this.activeTool === 'crop' || this.activeTool === 'perspectiveCrop') {
+          this.cropAngle = 0;
+          this.selectTool('brush');
+          return;
+        }
+        if (this.session.doc?.hasSelection) {
+          this.session.dispatch('selection.deselect');
+          return;
+        }
+      }
+
+      // Arrow keys nudge active layer in Move tool (1px, or 10px with Shift — exact Photoshop behavior!)
+      if (this.activeTool === 'move' && ['arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) {
+        e.preventDefault();
+        const step = e.shiftKey ? 10 : 1;
+        const dx = k === 'arrowleft' ? -step : k === 'arrowright' ? step : 0;
+        const dy = k === 'arrowup' ? -step : k === 'arrowdown' ? step : 0;
+        this.nudgeActiveLayer(dx, dy);
+        return;
+      }
+
+      if (mod) return;
+      const toolKeys = {
+        v: 'move',
+        b: 'brush',
+        e: 'eraser',
+        j: 'heal',
+        o: 'tone',
+        m: 'select',
+        l: 'select',
+        w: 'select',
+        c: 'crop',
+        t: 'text',
+        g: 'fill',
+        u: 'shape',
+        i: 'eyedropper',
+        h: 'hand'
+      };
+      if (toolKeys[k]) {
+        if (k === 'm') this.selectMode = 'rect';
+        else if (k === 'l') this.selectMode = 'lasso';
+        else if (k === 'w') this.selectMode = 'wand';
+        this.selectTool(toolKeys[k]);
+      }
+    });
+  }
+
   loadSampleProject(kind) {
     this._userCreatedOrOpenedDoc = true;
     this._initialLoadComplete = true;
@@ -722,6 +845,7 @@ class ProStudioMobileApp {
     ro.observe(this.workspaceEl);
 
     this.session.onChange((event) => {
+      this._cachedTransformBounds = null;
       this.syncHeaderAndHUD();
       if (this.activeSheet !== 'none') {
         this.renderActiveSheet();
@@ -2128,9 +2252,9 @@ class ProStudioMobileApp {
       addSelectDropdown(
         [
           { id: 'crop', label: 'Tool: Crop' },
-          { id: 'perspectiveCrop', label: 'Tool: Perspective Crop' },
-          { id: 'slice', label: 'Tool: Slice Draw' },
-          { id: 'sliceSelect', label: 'Tool: Slice Select' }
+          { id: 'perspectiveCrop', label: 'Tool: Persp Crop' },
+          { id: 'slice', label: 'Tool: Slice' },
+          { id: 'sliceSelect', label: 'Tool: Slice Sel' }
         ],
         this.activeTool,
         (val) => this.selectTool(val)
@@ -2139,32 +2263,70 @@ class ProStudioMobileApp {
       if (this.activeTool === 'crop') {
         addSelectDropdown(
           [
-            { id: 'free', label: 'Ratio: Freeform' },
-            { id: '1:1', label: 'Ratio: 1:1 Square' },
-            { id: '4:5', label: 'Ratio: 4:5 Portrait' },
-            { id: '16:9', label: 'Ratio: 16:9 Wide' },
-            { id: '9:16', label: 'Ratio: 9:16 Story' }
+            { id: 'free', label: 'Ratio: Free' },
+            { id: 'original', label: 'Ratio: Original' },
+            { id: '1:1', label: 'Ratio: 1:1' },
+            { id: '4:5', label: 'Ratio: 4:5' },
+            { id: '5:4', label: 'Ratio: 5:4' },
+            { id: '3:2', label: 'Ratio: 3:2' },
+            { id: '4:3', label: 'Ratio: 4:3' },
+            { id: '16:9', label: 'Ratio: 16:9' },
+            { id: '9:16', label: 'Ratio: 9:16' }
           ],
           this.cropAspect,
           (val) => {
             this.cropAspect = val;
             this.applyCropAspectConstraint();
+            this.renderFloatingContextBar();
             this.requestRender();
-          }
+          },
+          'Crop Aspect Ratio'
         );
+        addButton('⇄', false, () => this.swapCropAspectRatio());
         addSelectDropdown(
           [
-            { id: 'thirds', label: 'Grid: Rule of Thirds' },
-            { id: 'grid', label: 'Grid: Dense Grid' },
+            { id: 'thirds', label: 'Grid: Thirds' },
+            { id: 'grid', label: 'Grid: Dense' },
             { id: 'diagonal', label: 'Grid: Diagonal' },
-            { id: 'golden', label: 'Grid: Golden Ratio' }
+            { id: 'golden', label: 'Grid: Golden' }
           ],
           this.cropGridMode,
           (val) => {
             this.cropGridMode = val;
             this.requestRender();
-          }
+          },
+          'Crop Overlay Grid'
         );
+
+        // Straighten Angle control (matches Photoshop Straighten in Crop Options Bar!)
+        const angWrap = document.createElement('div');
+        angWrap.className = 'opt-chip';
+        angWrap.style.gap = '4px';
+        angWrap.style.padding = '0 6px';
+        angWrap.innerHTML = `<span style="font-size:10px;font-family:var(--pc-font-mono);" id="crop-angle-lbl">∠ ${this.cropAngle.toFixed(1)}°</span>
+          <input type="range" id="crop-angle-slider" min="-45" max="45" step="0.5" value="${this.cropAngle}" style="width:66px;accent-color:var(--pc-accent);" />`;
+        const angSlider = angWrap.querySelector('#crop-angle-slider');
+        const angLbl = angWrap.querySelector('#crop-angle-lbl');
+        angSlider.addEventListener('input', () => {
+          this.cropAngle = Number(angSlider.value);
+          angLbl.textContent = `∠ ${this.cropAngle.toFixed(1)}°`;
+          this.renderFloatingContextBar();
+          this.requestRender();
+        });
+        angLbl.title = 'Tap to reset Straighten angle to 0°';
+        angLbl.addEventListener('click', () => {
+          this.cropAngle = 0;
+          angSlider.value = '0';
+          angLbl.textContent = '∠ 0.0°';
+          this.renderFloatingContextBar();
+          this.requestRender();
+        });
+        strip.appendChild(angWrap);
+
+        addButton(this.cropDeletePixels ? '☑ Delete Cropped' : '☐ Keep Cropped', this.cropDeletePixels, () => {
+          this.cropDeletePixels = !this.cropDeletePixels;
+          this.renderToolOptionsStrip();
+        });
       } else if (this.activeTool === 'perspectiveCrop') {
         addButton(this.perspectiveShowGrid ? '☑ Mesh Grid' : '☐ Mesh Grid', this.perspectiveShowGrid, () => {
           this.perspectiveShowGrid = !this.perspectiveShowGrid;
@@ -2173,6 +2335,7 @@ class ProStudioMobileApp {
         });
         addButton('Reset Quad', false, () => {
           this.resetCropBoxes();
+          this.renderFloatingContextBar();
           this.requestRender();
         });
       } else {
@@ -2202,15 +2365,23 @@ class ProStudioMobileApp {
         this.openTextEditorModal(this.session.doc?.activeLayer?.kind === 'text' ? this.session.doc.activeLayer : null)
       );
     } else if (this.activeTool === 'move') {
-      addButton('📱 +Photo Layer', true, () => document.getElementById('file-input-place-layer').click());
-      addButton('Flip H', false, () => this.session.dispatch('transform.flipHorizontal'));
-      addButton('Flip V', false, () => this.session.dispatch('transform.flipVertical'));
-      addButton('Rotate 90°', false, () => {
-        this.session.dispatch('transform.rotate90CW');
-        this.fitCanvasToViewport();
+      addButton(this.moveAutoSelect ? '☑ Auto-Sel' : '☐ Auto-Sel', this.moveAutoSelect, () => {
+        this.moveAutoSelect = !this.moveAutoSelect;
+        this.renderToolOptionsStrip();
       });
+      addButton(this.transformLockAspect ? '🔗 Lock Ratio' : '🔓 Free Scale', this.transformLockAspect, () => {
+        this.transformLockAspect = !this.transformLockAspect;
+        this.renderToolOptionsStrip();
+      });
+      addButton('📱 +Photo', true, () => document.getElementById('file-input-place-layer').click());
+      addButton('Fit', false, () => this.fitActiveLayerToCanvas());
+      addButton('Center', false, () => this.centerActiveLayer());
       addButton('−10%', false, () => this.scaleActiveLayer(0.9));
       addButton('+10%', false, () => this.scaleActiveLayer(1.1));
+      addButton('Flip H', false, () => this.session.dispatch('transform.flipHorizontal'));
+      addButton('Flip V', false, () => this.session.dispatch('transform.flipVertical'));
+      addButton('↻ 90°', false, () => this.rotateActiveLayerBy(90));
+      addButton('Reset', false, () => this.resetActiveLayerTransform());
     } else if (this.activeTool === 'fill') {
       addSelectDropdown(
         [
@@ -2279,43 +2450,290 @@ class ProStudioMobileApp {
     }
   }
 
+  getCropTargetRatio() {
+    const doc = this.session.doc;
+    if (!doc || !this.cropAspect || this.cropAspect === 'free') return null;
+    if (this.cropAspect === 'original') return doc.width / Math.max(1, doc.height);
+    const parts = this.cropAspect.split(':').map(Number);
+    if (parts.length === 2 && parts[0] > 0 && parts[1] > 0) {
+      return parts[0] / parts[1];
+    }
+    return null;
+  }
+
   applyCropAspectConstraint() {
     const doc = this.session.doc;
-    if (!doc || !this.cropBox || this.cropAspect === 'free') return;
-    const [aw, ah] = this.cropAspect.split(':').map(Number);
-    const ratio = aw / ah;
-    let w = doc.width * 0.8;
+    if (!doc || !this.cropBox) return;
+    const ratio = this.getCropTargetRatio();
+    if (!ratio) return;
+    let w = doc.width * 0.88;
     let h = w / ratio;
-    if (h > doc.height * 0.8) {
-      h = doc.height * 0.8;
+    if (h > doc.height * 0.88) {
+      h = doc.height * 0.88;
       w = h * ratio;
     }
     this.cropBox = {
       x: Math.round((doc.width - w) / 2),
       y: Math.round((doc.height - h) / 2),
-      w: Math.round(w),
-      h: Math.round(h)
+      w: Math.max(24, Math.round(w)),
+      h: Math.max(24, Math.round(h))
     };
+  }
+
+  swapCropAspectRatio() {
+    const doc = this.session.doc;
+    if (!doc || !this.cropBox) return;
+    const swapMap = { '4:5': '5:4', '5:4': '4:5', '16:9': '9:16', '9:16': '16:9' };
+    if (swapMap[this.cropAspect]) {
+      this.cropAspect = swapMap[this.cropAspect];
+      this.applyCropAspectConstraint();
+    } else if (this.cropAspect === 'free' || this.cropAspect === 'original' || this.cropAspect === '3:2' || this.cropAspect === '4:3') {
+      const cb = this.cropBox;
+      const cx = cb.x + cb.w / 2;
+      const cy = cb.y + cb.h / 2;
+      let nw = cb.h;
+      let nh = cb.w;
+      const fit = Math.min(1, doc.width / Math.max(1, nw), doc.height / Math.max(1, nh));
+      nw = Math.max(24, Math.round(nw * fit));
+      nh = Math.max(24, Math.round(nh * fit));
+      this.cropBox = {
+        x: Math.max(0, Math.min(doc.width - nw, Math.round(cx - nw / 2))),
+        y: Math.max(0, Math.min(doc.height - nh, Math.round(cy - nh / 2))),
+        w: nw,
+        h: nh
+      };
+      if (this.cropAspect === '3:2') this.cropAspect = 'free';
+      if (this.cropAspect === '4:3') this.cropAspect = 'free';
+    }
+    this.renderToolOptionsStrip();
+    this.renderFloatingContextBar();
+    this.requestRender();
+  }
+
+  commitCropAction() {
+    const doc = this.session.doc;
+    if (!doc || !this.cropBox) return;
+    this.session.dispatch('crop.apply', {
+      ...this.cropBox,
+      angle: this.cropAngle,
+      deleteCroppedPixels: this.cropDeletePixels
+    });
+    this.cropAngle = 0;
+    this.cropAspect = 'free';
+    this.resetCropBoxes(doc);
+    this.fitCanvasToViewport();
+    this.selectTool('brush');
+    this.showToast(`Cropped to ${doc.width}×${doc.height} px`);
+  }
+
+  commitPerspectiveCropAction() {
+    const doc = this.session.doc;
+    if (!doc || !this.perspectiveQuad) return;
+    if (!Algorithms.isConvexQuad(this.perspectiveQuad)) {
+      this.showToast('Perspective quad must be convex');
+      return;
+    }
+    this.session.dispatch('image.perspectiveCrop', {
+      corners: this.perspectiveQuad
+    });
+    this.resetCropBoxes(doc);
+    this.fitCanvasToViewport();
+    this.selectTool('brush');
+    this.showToast(`Perspective Crop Rectified (${doc.width}×${doc.height} px)`);
+  }
+
+  getActiveTransformBounds() {
+    const doc = this.session.doc;
+    const layer = doc?.activeLayer;
+    if (!doc || !layer || layer.kind === 'adjustment') return null;
+
+    if (layer.smartSource?.canvas || layer.kind === 'shape' || layer.kind === 'text') {
+      return doc.getLayerTransformBounds(layer);
+    }
+
+    if (
+      this._cachedTransformBounds &&
+      this._cachedTransformBounds.layerId === layer.id &&
+      this._cachedTransformBounds.docW === doc.width &&
+      this._cachedTransformBounds.docH === doc.height
+    ) {
+      return this._cachedTransformBounds.bounds;
+    }
+
+    const bounds = doc.getLayerTransformBounds(layer);
+    this._cachedTransformBounds = { layerId: layer.id, docW: doc.width, docH: doc.height, bounds };
+    return bounds;
   }
 
   scaleActiveLayer(factor) {
     const doc = this.session.doc;
     const layer = doc?.activeLayer;
-    if (!doc || !layer || layer.kind === 'adjustment') return;
+    if (!doc || !layer || layer.kind === 'adjustment' || layer.locked) return;
 
-    const temp = document.createElement('canvas');
-    temp.width = doc.width;
-    temp.height = doc.height;
-    const tCtx = temp.getContext('2d');
-    const nw = doc.width * factor;
-    const nh = doc.height * factor;
-    tCtx.drawImage(layer.canvas, (doc.width - nw) / 2, (doc.height - nh) / 2, nw, nh);
-
-    const ctx = layer.canvas.getContext('2d');
-    ctx.clearRect(0, 0, doc.width, doc.height);
-    ctx.drawImage(temp, 0, 0);
+    if (layer.kind === 'text' && layer.textData) {
+      layer.textData.fontSize = Math.max(8, Math.min(600, Math.round((layer.textData.fontSize || 48) * factor)));
+      doc.rasterizeTextLayer(layer);
+    } else if (layer.kind === 'shape' && layer.shapeData) {
+      const sd = layer.shapeData;
+      const cx = sd.x + sd.w / 2;
+      const cy = sd.y + sd.h / 2;
+      sd.w = Math.max(12, Math.round(sd.w * factor));
+      sd.h = Math.max(12, Math.round(sd.h * factor));
+      sd.x = Math.round(cx - sd.w / 2);
+      sd.y = Math.round(cy - sd.h / 2);
+      doc.rasterizeShapeLayer(layer);
+    } else {
+      const ss = doc.ensureSmartSource(layer);
+      if (!ss) return;
+      ss.w = Math.max(12, ss.w * factor);
+      ss.h = Math.max(12, ss.h * factor);
+      doc.rasterizeSmartLayer(layer);
+    }
     doc.pushHistory(`Scale Layer (${Math.round(factor * 100)}%)`);
     this.session.notify('transform.scale');
+  }
+
+  rotateActiveLayerBy(deg) {
+    const doc = this.session.doc;
+    const layer = doc?.activeLayer;
+    if (!doc || !layer || layer.kind === 'adjustment' || layer.locked) return;
+    const rad = (deg * Math.PI) / 180;
+
+    if (layer.kind === 'text' && layer.textData) {
+      layer.textData.rotation = (layer.textData.rotation || 0) + rad;
+      doc.rasterizeTextLayer(layer);
+    } else if (layer.kind === 'shape' && layer.shapeData) {
+      layer.shapeData.rotation = (layer.shapeData.rotation || 0) + rad;
+      doc.rasterizeShapeLayer(layer);
+    } else {
+      const ss = doc.ensureSmartSource(layer);
+      if (!ss) return;
+      ss.rotation = (ss.rotation || 0) + rad;
+      doc.rasterizeSmartLayer(layer);
+    }
+    doc.pushHistory(`Rotate Layer ${deg > 0 ? '+' : ''}${deg}°`);
+    this.session.notify('transform.rotate');
+  }
+
+  fitActiveLayerToCanvas() {
+    const doc = this.session.doc;
+    const layer = doc?.activeLayer;
+    if (!doc || !layer || layer.kind === 'adjustment' || layer.locked) return;
+
+    if (layer.kind === 'shape' && layer.shapeData) {
+      const sd = layer.shapeData;
+      const scale = Math.min(doc.width / Math.max(1, sd.w), doc.height / Math.max(1, sd.h));
+      sd.w = Math.round(sd.w * scale);
+      sd.h = Math.round(sd.h * scale);
+      sd.x = Math.round((doc.width - sd.w) / 2);
+      sd.y = Math.round((doc.height - sd.h) / 2);
+      sd.rotation = 0;
+      doc.rasterizeShapeLayer(layer);
+    } else if (layer.kind === 'text' && layer.textData) {
+      layer.textData.x = Math.round(doc.width / 2);
+      layer.textData.y = Math.round(doc.height / 2);
+      layer.textData.rotation = 0;
+      doc.rasterizeTextLayer(layer);
+    } else {
+      const ss = doc.ensureSmartSource(layer);
+      if (!ss) return;
+      const scale = Math.min(doc.width / Math.max(1, ss.origW), doc.height / Math.max(1, ss.origH));
+      ss.w = Math.round(ss.origW * scale);
+      ss.h = Math.round(ss.origH * scale);
+      ss.cx = doc.width / 2;
+      ss.cy = doc.height / 2;
+      ss.rotation = 0;
+      doc.rasterizeSmartLayer(layer);
+    }
+    doc.pushHistory('Fit Layer to Canvas');
+    this.session.notify('transform.fit');
+    this.showToast('Fitted layer to canvas');
+  }
+
+  centerActiveLayer() {
+    const doc = this.session.doc;
+    const layer = doc?.activeLayer;
+    if (!doc || !layer || layer.kind === 'adjustment' || layer.locked) return;
+
+    if (layer.kind === 'text' && layer.textData) {
+      layer.textData.x = Math.round(doc.width / 2);
+      layer.textData.y = Math.round(doc.height / 2);
+      doc.rasterizeTextLayer(layer);
+    } else if (layer.kind === 'shape' && layer.shapeData) {
+      layer.shapeData.x = Math.round((doc.width - layer.shapeData.w) / 2);
+      layer.shapeData.y = Math.round((doc.height - layer.shapeData.h) / 2);
+      doc.rasterizeShapeLayer(layer);
+    } else {
+      const ss = doc.ensureSmartSource(layer);
+      if (!ss) return;
+      ss.cx = doc.width / 2;
+      ss.cy = doc.height / 2;
+      doc.rasterizeSmartLayer(layer);
+    }
+    doc.pushHistory('Center Layer');
+    this.session.notify('transform.center');
+    this.showToast('Centered layer on canvas');
+  }
+
+  resetActiveLayerTransform() {
+    const doc = this.session.doc;
+    const layer = doc?.activeLayer;
+    if (!doc || !layer || layer.kind === 'adjustment' || layer.locked) return;
+
+    if (layer.smartSource?.canvas) {
+      const ss = layer.smartSource;
+      const fit = Math.min(doc.width / Math.max(1, ss.origW), doc.height / Math.max(1, ss.origH), 1);
+      ss.w = Math.round(ss.origW * fit);
+      ss.h = Math.round(ss.origH * fit);
+      ss.cx = doc.width / 2;
+      ss.cy = doc.height / 2;
+      ss.rotation = 0;
+      ss.flipX = false;
+      ss.flipY = false;
+      doc.rasterizeSmartLayer(layer);
+    } else if (layer.kind === 'text' && layer.textData) {
+      layer.textData.rotation = 0;
+      layer.textData.flipX = false;
+      layer.textData.flipY = false;
+      doc.rasterizeTextLayer(layer);
+    } else if (layer.kind === 'shape' && layer.shapeData) {
+      layer.shapeData.rotation = 0;
+      layer.shapeData.flipX = false;
+      layer.shapeData.flipY = false;
+      doc.rasterizeShapeLayer(layer);
+    }
+    doc.pushHistory('Reset Transform');
+    this.session.notify('transform.reset');
+    this.showToast('Reset layer transform');
+  }
+
+  nudgeActiveLayer(dx, dy) {
+    const doc = this.session.doc;
+    const layer = doc?.activeLayer;
+    if (!doc || !layer || layer.kind === 'adjustment' || layer.locked) return;
+
+    if (layer.smartSource?.canvas) {
+      layer.smartSource.cx += dx;
+      layer.smartSource.cy += dy;
+      doc.rasterizeSmartLayer(layer);
+    } else if (layer.kind === 'text' && layer.textData) {
+      layer.textData.x += dx;
+      layer.textData.y += dy;
+      doc.rasterizeTextLayer(layer);
+    } else if (layer.kind === 'shape' && layer.shapeData) {
+      layer.shapeData.x += dx;
+      layer.shapeData.y += dy;
+      doc.rasterizeShapeLayer(layer);
+    } else {
+      const ss = doc.ensureSmartSource(layer);
+      if (ss) {
+        ss.cx += dx;
+        ss.cy += dy;
+        doc.rasterizeSmartLayer(layer);
+      }
+    }
+    doc.pushHistory('Nudge Layer');
+    this.session.notify('layer.moved');
   }
 
   /* ==========================================================================
@@ -2343,16 +2761,20 @@ class ProStudioMobileApp {
     if (this.activeTool === 'crop' && this.cropBox) {
       bar.hidden = false;
       addBtn('Reset', '', () => {
+        this.cropAspect = 'free';
+        this.cropAngle = 0;
         this.resetCropBoxes(doc);
+        this.renderToolOptionsStrip();
+        this.renderFloatingContextBar();
         this.requestRender();
       });
-      addBtn('Cancel ✕', 'danger', () => this.selectTool('brush'));
-      addBtn(`Apply Crop (${Math.round(this.cropBox.w)}×${Math.round(this.cropBox.h)}) ✓`, 'primary', () => {
-        this.session.dispatch('crop.apply', { ...this.cropBox, angle: this.cropAngle });
+      addBtn('Cancel ✕', 'danger', () => {
         this.cropAngle = 0;
-        this.fitCanvasToViewport();
         this.selectTool('brush');
-        this.showToast('Document Cropped');
+      });
+      const angTxt = Math.abs(this.cropAngle) > 0.05 ? ` · ${this.cropAngle.toFixed(1)}°` : '';
+      addBtn(`Apply Crop (${Math.round(this.cropBox.w)}×${Math.round(this.cropBox.h)}${angTxt}) ✓`, 'primary', () => {
+        this.commitCropAction();
       });
       return;
     }
@@ -2362,25 +2784,14 @@ class ProStudioMobileApp {
       const valid = Algorithms.isConvexQuad(this.perspectiveQuad);
       addBtn('Reset Quad', '', () => {
         this.resetCropBoxes(doc);
+        this.renderFloatingContextBar();
         this.requestRender();
       });
       addBtn('Cancel ✕', 'danger', () => this.selectTool('brush'));
       addBtn(
         valid ? 'Apply Perspective Crop ✓' : 'Quad Invalid',
         valid ? 'primary' : 'danger',
-        () => {
-          if (!valid) {
-            this.showToast('Perspective quad must be convex');
-            return;
-          }
-          this.session.dispatch('image.perspectiveCrop', {
-            corners: this.perspectiveQuad
-          });
-          this.resetCropBoxes(doc);
-          this.fitCanvasToViewport();
-          this.selectTool('brush');
-          this.showToast('Perspective Crop Rectified!');
-        }
+        () => this.commitPerspectiveCropAction()
       );
       return;
     }
@@ -2466,6 +2877,35 @@ class ProStudioMobileApp {
           drag.targetCanvas.getContext('2d').clearRect(0, 0, drag.targetCanvas.width, drag.targetCanvas.height);
           drag.targetCanvas.getContext('2d').drawImage(drag.snapCanvas, 0, 0);
           this.session.doc?.endFastInteraction();
+        } else if (this.toolDrag?.type === 'transform') {
+          const drag = this.toolDrag;
+          const lyr = drag.layer;
+          if (lyr && this.session.doc) {
+            if (drag.origSmart && lyr.smartSource) {
+              Object.assign(lyr.smartSource, drag.origSmart);
+              this.session.doc.rasterizeSmartLayer(lyr);
+            } else if (drag.origText && lyr.textData) {
+              Object.assign(lyr.textData, drag.origText);
+              this.session.doc.rasterizeTextLayer(lyr);
+            } else if (drag.origShape && lyr.shapeData) {
+              Object.assign(lyr.shapeData, drag.origShape);
+              this.session.doc.rasterizeShapeLayer(lyr);
+            }
+          }
+          this.activeSmartGuides = [];
+          this._cachedTransformBounds = null;
+          this.session.doc?.endFastInteraction();
+        } else if (this.toolDrag?.type === 'crop' && this.toolDrag.origBox) {
+          this.cropBox = { ...this.toolDrag.origBox };
+          if (typeof this.toolDrag.origCropAngle === 'number') {
+            this.cropAngle = this.toolDrag.origCropAngle;
+            const angSlider = document.getElementById('crop-angle-slider');
+            const angLbl = document.getElementById('crop-angle-lbl');
+            if (angSlider) angSlider.value = String(this.cropAngle);
+            if (angLbl) angLbl.textContent = `∠ ${this.cropAngle.toFixed(1)}°`;
+          }
+        } else if (this.toolDrag?.type === 'perspectiveCrop' && this.toolDrag.origQuad) {
+          this.perspectiveQuad = this.toolDrag.origQuad.map((p) => ({ ...p }));
         }
         if (
           this.inlineTextSession?.isNew &&
@@ -2555,11 +2995,158 @@ class ProStudioMobileApp {
     canvas.addEventListener('pointercancel', handlePointerUpOrCancel);
   }
 
+  /* ---- Geometry & Hit-Test Helpers for Transform, Auto-Select, Crop & Perspective ---- */
+  isPointInPolygon(pt, poly) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i].x, yi = poly[i].y;
+      const xj = poly[j].x, yj = poly[j].y;
+      const intersect = (yi > pt.y) !== (yj > pt.y) && pt.x < ((xj - xi) * (pt.y - yi)) / (yj - yi + 1e-9) + xi;
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
+  distToSegment(pt, a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq < 1e-6) return Math.hypot(pt.x - a.x, pt.y - a.y);
+    const t = Math.max(0, Math.min(1, ((pt.x - a.x) * dx + (pt.y - a.y) * dy) / lenSq));
+    return Math.hypot(pt.x - (a.x + t * dx), pt.y - (a.y + t * dy));
+  }
+
+  hitTestTransformHandles(pt, bounds) {
+    if (!bounds) return null;
+    const { cx, cy, w, h, rotation } = bounds;
+    const cos = Math.cos(rotation || 0);
+    const sin = Math.sin(rotation || 0);
+    // Transform doc point into local rotated box coordinates
+    const dx = pt.x - cx;
+    const dy = pt.y - cy;
+    const lx = dx * cos + dy * sin;
+    const ly = -dx * sin + dy * cos;
+
+    const hw = w / 2;
+    const hh = h / 2;
+    const hr = Math.max(12, 24 / this.zoom);
+    const rotStem = Math.max(22, 34 / this.zoom);
+
+    // 1. Top rotation lollipop handle (0, -hh - rotStem)
+    if (Math.hypot(lx, ly - (-hh - rotStem)) <= hr * 1.15) {
+      return { mode: 'rotate', sx: 0, sy: 0 };
+    }
+
+    // 2. 4 corner handles
+    const corners = [
+      { mode: 'nw', x: -hw, y: -hh, sx: -1, sy: -1 },
+      { mode: 'ne', x: hw, y: -hh, sx: 1, sy: -1 },
+      { mode: 'se', x: hw, y: hh, sx: 1, sy: 1 },
+      { mode: 'sw', x: -hw, y: hh, sx: -1, sy: 1 }
+    ];
+    for (const c of corners) {
+      if (Math.hypot(lx - c.x, ly - c.y) <= hr) return { mode: c.mode, sx: c.sx, sy: c.sy };
+    }
+
+    // 3. 4 side midpoint handles
+    const edges = [
+      { mode: 'n', x: 0, y: -hh, sx: 0, sy: -1 },
+      { mode: 's', x: 0, y: hh, sx: 0, sy: 1 },
+      { mode: 'w', x: -hw, y: 0, sx: -1, sy: 0 },
+      { mode: 'e', x: hw, y: 0, sx: 1, sy: 0 }
+    ];
+    for (const ed of edges) {
+      if (Math.hypot(lx - ed.x, ly - ed.y) <= hr) return { mode: ed.mode, sx: ed.sx, sy: ed.sy };
+    }
+
+    // 4. Inside bounding box
+    if (Math.abs(lx) <= hw && Math.abs(ly) <= hh) {
+      return { mode: 'inside', sx: 0, sy: 0 };
+    }
+
+    // 5. Just outside a corner -> rotate (Photoshop outside-corner rotate!)
+    const outerR = Math.max(22, 42 / this.zoom);
+    for (const c of corners) {
+      const d = Math.hypot(lx - c.x, ly - c.y);
+      if (d > hr && d <= outerR) return { mode: 'outerRotate', sx: 0, sy: 0 };
+    }
+
+    return null;
+  }
+
+  hitTestLayerAtPoint(docX, docY) {
+    const doc = this.session.doc;
+    if (!doc) return null;
+    const ix = Math.round(docX);
+    const iy = Math.round(docY);
+    const inDoc = ix >= 0 && iy >= 0 && ix < doc.width && iy < doc.height;
+
+    for (let i = doc.layers.length - 1; i >= 0; i--) {
+      const lyr = doc.layers[i];
+      if (!lyr.visible || lyr.locked || lyr.kind === 'adjustment') continue;
+
+      if (lyr.kind === 'text' || lyr.kind === 'shape' || lyr.smartSource?.canvas) {
+        const b = doc.getLayerTransformBounds(lyr);
+        if (b) {
+          const cos = Math.cos(b.rotation || 0);
+          const sin = Math.sin(b.rotation || 0);
+          const dx = docX - b.cx;
+          const dy = docY - b.cy;
+          const lx = dx * cos + dy * sin;
+          const ly = -dx * sin + dy * cos;
+          if (Math.abs(lx) <= b.w / 2 + 4 && Math.abs(ly) <= b.h / 2 + 4) {
+            // For smartSource images, verify pixel isn't fully transparent if inside canvas
+            if (lyr.smartSource?.canvas && inDoc) {
+              const alpha = lyr.canvas.getContext('2d').getImageData(ix, iy, 1, 1).data[3];
+              if (alpha > 10) return lyr;
+            } else {
+              return lyr;
+            }
+          }
+        }
+      } else if (inDoc) {
+        const alpha = lyr.canvas.getContext('2d').getImageData(ix, iy, 1, 1).data[3];
+        if (alpha > 12) return lyr;
+      }
+    }
+    return null;
+  }
+
+  showCornerLoupe(docX, docY, clientX, clientY, label) {
+    const doc = this.session.doc;
+    if (!doc) return;
+    const ix = Math.max(0, Math.min(doc.width - 1, Math.round(docX)));
+    const iy = Math.max(0, Math.min(doc.height - 1, Math.round(docY)));
+    const loupe = document.getElementById('pixel-loupe');
+    const lCanvas = document.getElementById('pixel-loupe-canvas');
+    if (!loupe || !lCanvas) return;
+    const lCtx = lCanvas.getContext('2d');
+    const wsRect = this.workspaceEl.getBoundingClientRect();
+    loupe.hidden = false;
+    loupe.style.left = `${clientX - wsRect.left}px`;
+    loupe.style.top = `${clientY - wsRect.top}px`;
+
+    lCtx.imageSmoothingEnabled = false;
+    lCtx.fillStyle = '#181818';
+    lCtx.fillRect(0, 0, 66, 66);
+    lCtx.drawImage(doc.compositeCanvas, ix - 8, iy - 8, 17, 17, 0, 0, 66, 66);
+
+    lCtx.strokeStyle = '#38b5ff';
+    lCtx.lineWidth = 1.5;
+    lCtx.beginPath();
+    lCtx.moveTo(33, 0);
+    lCtx.lineTo(33, 66);
+    lCtx.moveTo(0, 33);
+    lCtx.lineTo(66, 33);
+    lCtx.stroke();
+    document.getElementById('pixel-loupe-hex').textContent = `${label} ${ix},${iy}`;
+  }
+
   handleSinglePointerDown(e) {
     const doc = this.session.doc;
     if (!doc) return;
     const pt = this.screenToDoc(e.clientX, e.clientY);
-    const layer = doc.activeLayer;
+    let layer = doc.activeLayer;
 
     if (this.activeTool === 'hand') {
       this.toolDrag = {
@@ -2617,7 +3204,10 @@ class ProStudioMobileApp {
           strokeWidth: ts.strokeWidth || 0,
           strokeColor: ts.strokeColor || '#000000',
           x: Math.round(pt.x),
-          y: Math.round(pt.y)
+          y: Math.round(pt.y),
+          rotation: 0,
+          flipX: false,
+          flipY: false
         }
       });
       doc.layers.push(newLayer);
@@ -2626,42 +3216,119 @@ class ProStudioMobileApp {
       return;
     }
 
+    // ---- Photoshop 8-Handle Crop Tool + Outside Straighten Rotation + Double-Tap Commit ----
     if (this.activeTool === 'crop' && this.cropBox) {
       const cb = this.cropBox;
-      const handleRadius = 26 / this.zoom;
-      let mode = 'move';
-      if (Math.hypot(pt.x - cb.x, pt.y - cb.y) < handleRadius) mode = 'nw';
-      else if (Math.hypot(pt.x - (cb.x + cb.w), pt.y - cb.y) < handleRadius) mode = 'ne';
-      else if (Math.hypot(pt.x - cb.x, pt.y - (cb.y + cb.h)) < handleRadius) mode = 'sw';
-      else if (Math.hypot(pt.x - (cb.x + cb.w), pt.y - (cb.y + cb.h)) < handleRadius) mode = 'se';
+      const hr = Math.max(14, 26 / this.zoom);
+      let mode = 'rotate';
 
+      if (Math.hypot(pt.x - cb.x, pt.y - cb.y) < hr) mode = 'nw';
+      else if (Math.hypot(pt.x - (cb.x + cb.w), pt.y - cb.y) < hr) mode = 'ne';
+      else if (Math.hypot(pt.x - cb.x, pt.y - (cb.y + cb.h)) < hr) mode = 'sw';
+      else if (Math.hypot(pt.x - (cb.x + cb.w), pt.y - (cb.y + cb.h)) < hr) mode = 'se';
+      else if (Math.abs(pt.y - cb.y) < hr && pt.x >= cb.x && pt.x <= cb.x + cb.w) mode = 'n';
+      else if (Math.abs(pt.y - (cb.y + cb.h)) < hr && pt.x >= cb.x && pt.x <= cb.x + cb.w) mode = 's';
+      else if (Math.abs(pt.x - cb.x) < hr && pt.y >= cb.y && pt.y <= cb.y + cb.h) mode = 'w';
+      else if (Math.abs(pt.x - (cb.x + cb.w)) < hr && pt.y >= cb.y && pt.y <= cb.y + cb.h) mode = 'e';
+      else if (pt.x >= cb.x && pt.x <= cb.x + cb.w && pt.y >= cb.y && pt.y <= cb.y + cb.h) {
+        // Double-tap inside crop box commits crop (exact Photoshop UX!)
+        const now = performance.now();
+        if (
+          this._lastCropTap &&
+          now - this._lastCropTap.time < 320 &&
+          Math.hypot(pt.x - this._lastCropTap.x, pt.y - this._lastCropTap.y) < 28 / this.zoom
+        ) {
+          this._lastCropTap = null;
+          this.commitCropAction();
+          return;
+        }
+        this._lastCropTap = { time: now, x: pt.x, y: pt.y };
+        mode = 'move';
+      }
+
+      const cx = cb.x + cb.w / 2;
+      const cy = cb.y + cb.h / 2;
       this.toolDrag = {
         type: 'crop',
         mode,
         startX: pt.x,
         startY: pt.y,
-        origBox: { ...cb }
+        origBox: { ...cb },
+        origCropAngle: this.cropAngle,
+        startAngle: Math.atan2(pt.y - cy, pt.x - cx)
       };
       return;
     }
 
+    // ---- Photoshop Perspective Crop: Corners (+ Loupe), Edges, Inside Move, Outside Fresh Draw ----
     if (this.activeTool === 'perspectiveCrop' && this.perspectiveQuad) {
-      const handleRadius = 30 / this.zoom;
+      const q = this.perspectiveQuad;
+      const handleRadius = Math.max(16, 30 / this.zoom);
       let cornerIdx = -1;
       let minDist = handleRadius;
       for (let i = 0; i < 4; i++) {
-        const d = Math.hypot(pt.x - this.perspectiveQuad[i].x, pt.y - this.perspectiveQuad[i].y);
+        const d = Math.hypot(pt.x - q[i].x, pt.y - q[i].y);
         if (d < minDist) {
           minDist = d;
           cornerIdx = i;
         }
       }
+
+      if (cornerIdx >= 0) {
+        const labels = ['TL', 'TR', 'BR', 'BL'];
+        this.showCornerLoupe(q[cornerIdx].x, q[cornerIdx].y, e.clientX, e.clientY, labels[cornerIdx]);
+        this.toolDrag = {
+          type: 'perspectiveCrop',
+          mode: 'corner',
+          cornerIdx,
+          startX: pt.x,
+          startY: pt.y,
+          origQuad: q.map((p) => ({ ...p }))
+        };
+        return;
+      }
+
+      // Check 4 edges for parallel edge adjustment
+      const edgeRadius = Math.max(12, 18 / this.zoom);
+      let edgeIdx = -1;
+      let minEdgeDist = edgeRadius;
+      for (let i = 0; i < 4; i++) {
+        const d = this.distToSegment(pt, q[i], q[(i + 1) % 4]);
+        if (d < minEdgeDist) {
+          minEdgeDist = d;
+          edgeIdx = i;
+        }
+      }
+      if (edgeIdx >= 0) {
+        this.toolDrag = {
+          type: 'perspectiveCrop',
+          mode: 'edge',
+          edgeIdx,
+          startX: pt.x,
+          startY: pt.y,
+          origQuad: q.map((p) => ({ ...p }))
+        };
+        return;
+      }
+
+      if (this.isPointInPolygon(pt, q)) {
+        this.toolDrag = {
+          type: 'perspectiveCrop',
+          mode: 'move',
+          startX: pt.x,
+          startY: pt.y,
+          origQuad: q.map((p) => ({ ...p }))
+        };
+        return;
+      }
+
+      // Dragging outside the quad draws a fresh perspective crop box!
       this.toolDrag = {
         type: 'perspectiveCrop',
-        cornerIdx,
+        mode: 'draw',
         startX: pt.x,
         startY: pt.y,
-        origQuad: this.perspectiveQuad.map((p) => ({ ...p }))
+        origQuad: q.map((p) => ({ ...p }))
       };
       return;
     }
@@ -2677,19 +3344,34 @@ class ProStudioMobileApp {
       return;
     }
 
+    // ---- Photoshop 8-Handle Slice Select Tool ----
     if (this.activeTool === 'sliceSelect') {
-      const handleRadius = 24 / this.zoom;
+      const hr = Math.max(12, 22 / this.zoom);
       const sel = doc.selectedSlice;
-      if (sel && Math.hypot(pt.x - (sel.x + sel.w), pt.y - (sel.y + sel.h)) < handleRadius) {
-        this.toolDrag = {
-          type: 'sliceEdit',
-          mode: 'resize',
-          slice: sel,
-          startX: pt.x,
-          startY: pt.y,
-          origRect: { x: sel.x, y: sel.y, w: sel.w, h: sel.h }
-        };
-        return;
+      if (sel) {
+        const handles = [
+          { mode: 'nw', x: sel.x, y: sel.y },
+          { mode: 'n', x: sel.x + sel.w / 2, y: sel.y },
+          { mode: 'ne', x: sel.x + sel.w, y: sel.y },
+          { mode: 'e', x: sel.x + sel.w, y: sel.y + sel.h / 2 },
+          { mode: 'se', x: sel.x + sel.w, y: sel.y + sel.h },
+          { mode: 's', x: sel.x + sel.w / 2, y: sel.y + sel.h },
+          { mode: 'sw', x: sel.x, y: sel.y + sel.h },
+          { mode: 'w', x: sel.x, y: sel.y + sel.h / 2 }
+        ];
+        for (const h of handles) {
+          if (Math.hypot(pt.x - h.x, pt.y - h.y) < hr) {
+            this.toolDrag = {
+              type: 'sliceEdit',
+              mode: h.mode,
+              slice: sel,
+              startX: pt.x,
+              startY: pt.y,
+              origRect: { x: sel.x, y: sel.y, w: sel.w, h: sel.h }
+            };
+            return;
+          }
+        }
       }
 
       let hit = null;
@@ -2735,34 +3417,120 @@ class ProStudioMobileApp {
       return;
     }
 
-    if (!layer || layer.locked) {
-      this.showToast('Active layer is locked');
+    // ---- Photoshop Move & Interactive Free Transform Scaler (8 Handles + Rotate + Auto-Select + Smart Guides) ----
+    if (this.activeTool === 'move') {
+      // Mask moving stays fast pixel-shift on maskCanvas
+      if (layer && !layer.locked && doc.editingMask && layer.maskCanvas) {
+        doc.beginFastInteraction();
+        const targetCanvas = layer.maskCanvas;
+        const snap = document.createElement('canvas');
+        snap.width = doc.width;
+        snap.height = doc.height;
+        snap.getContext('2d').drawImage(targetCanvas, 0, 0);
+        this.toolDrag = {
+          type: 'move',
+          startX: pt.x,
+          startY: pt.y,
+          dx: 0,
+          dy: 0,
+          targetCanvas,
+          snapCanvas: snap
+        };
+        return;
+      }
+
+      // 1. Always hit-test active layer's handles FIRST so scaling/rotating never switches layers
+      let activeBounds = layer && !layer.locked && layer.kind !== 'adjustment' ? this.getActiveTransformBounds() : null;
+      let handleHit = activeBounds ? this.hitTestTransformHandles(pt, activeBounds) : null;
+      let mode = 'move';
+      let sx = 0;
+      let sy = 0;
+
+      if (handleHit && handleHit.mode !== 'inside' && handleHit.mode !== 'outerRotate') {
+        mode = handleHit.mode; // 'rotate' or one of 'nw,n,ne,e,se,s,sw,w'
+        sx = handleHit.sx;
+        sy = handleHit.sy;
+      } else {
+        // 2. Auto-Select topmost visible unlocked layer under finger if enabled
+        let switchedLayer = false;
+        if (this.moveAutoSelect) {
+          const autoHit = this.hitTestLayerAtPoint(pt.x, pt.y);
+          if (autoHit && autoHit.id !== doc.activeLayerId) {
+            doc.activeLayerId = autoHit.id;
+            doc.editingMask = false;
+            this._cachedTransformBounds = null;
+            layer = autoHit;
+            activeBounds = this.getActiveTransformBounds();
+            switchedLayer = true;
+            this.syncHeaderAndHUD();
+            if (this.rightLayersOpen) this.renderRightLayersDrawer();
+            this.requestRender();
+          }
+        }
+        // 3. Outside-corner rotation if we stayed on the active layer
+        if (!switchedLayer && handleHit && handleHit.mode === 'outerRotate') {
+          mode = 'rotate';
+        } else {
+          mode = 'move';
+        }
+      }
+
+      if (!layer || layer.locked) {
+        this.showToast('Active layer is locked');
+        return;
+      }
+      if (layer.kind === 'adjustment') {
+        this.showToast('Select a pixel, image, type, or shape layer to move or scale');
+        return;
+      }
+
+      // Promote raster layers to non-destructive Smart Source so moving/scaling NEVER clips or blurs!
+      if (layer.kind === 'raster') {
+        const ss = doc.ensureSmartSource(layer);
+        if (!ss) {
+          this.showToast('Active layer is empty');
+          return;
+        }
+      }
+
+      activeBounds = this.getActiveTransformBounds();
+      if (!activeBounds) return;
+
+      doc.beginFastInteraction();
+      const origSmart = layer.smartSource
+        ? {
+            cx: layer.smartSource.cx,
+            cy: layer.smartSource.cy,
+            w: layer.smartSource.w,
+            h: layer.smartSource.h,
+            rotation: layer.smartSource.rotation || 0,
+            flipX: Boolean(layer.smartSource.flipX),
+            flipY: Boolean(layer.smartSource.flipY)
+          }
+        : null;
+      const origText = layer.textData ? structuredClone(layer.textData) : null;
+      const origShape = layer.shapeData ? structuredClone(layer.shapeData) : null;
+
+      this.toolDrag = {
+        type: 'transform',
+        mode,
+        sx,
+        sy,
+        layer,
+        startX: pt.x,
+        startY: pt.y,
+        origBounds: { ...activeBounds },
+        origSmart,
+        origText,
+        origShape,
+        startAngle: Math.atan2(pt.y - activeBounds.cy, pt.x - activeBounds.cx),
+        changed: false
+      };
       return;
     }
 
-    if (this.activeTool === 'move') {
-      if (layer.kind === 'adjustment') {
-        this.showToast('Select a pixel, type, or shape layer to move');
-        return;
-      }
-      doc.beginFastInteraction();
-      const targetCanvas = doc.editingMask && layer.maskCanvas ? layer.maskCanvas : layer.canvas;
-      const snap = document.createElement('canvas');
-      snap.width = doc.width;
-      snap.height = doc.height;
-      snap.getContext('2d').drawImage(targetCanvas, 0, 0);
-
-      this.toolDrag = {
-        type: 'move',
-        startX: pt.x,
-        startY: pt.y,
-        dx: 0,
-        dy: 0,
-        targetCanvas,
-        snapCanvas: snap,
-        origTextPos: layer.textData ? { x: layer.textData.x, y: layer.textData.y } : null,
-        origShapePos: layer.shapeData ? { x: layer.shapeData.x, y: layer.shapeData.y } : null
-      };
+    if (!layer || layer.locked) {
+      this.showToast('Active layer is locked');
       return;
     }
 
@@ -2778,13 +3546,22 @@ class ProStudioMobileApp {
     }
 
     if (this.activeTool === 'fill') {
+      if (!doc.editingMask && layer.smartSource) {
+        doc.bakeSmartSource(layer);
+      }
       const targetCanvas = doc.editingMask && layer.maskCanvas ? layer.maskCanvas : layer.canvas;
+      let fillColor = this.fgColor;
+      if (doc.editingMask) {
+        const rgb = Algorithms.hexToRgb(this.fgColor);
+        const lum = Math.round(0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b);
+        fillColor = Algorithms.rgbToHex(lum, lum, lum);
+      }
       if (this.fillMode === 'bucket') {
         this.brush.floodFill(
           targetCanvas,
           pt.x,
           pt.y,
-          doc.editingMask ? '#ffffff' : this.fgColor,
+          fillColor,
           doc.hasSelection ? doc.selectionMask : null
         );
         doc.pushHistory('Paint Bucket Fill');
@@ -2796,19 +3573,23 @@ class ProStudioMobileApp {
           startY: pt.y,
           currX: pt.x,
           currY: pt.y,
-          targetCanvas
+          targetCanvas,
+          isMask: Boolean(doc.editingMask)
         };
       }
       return;
     }
 
-    // Painting tools: use fast layer sandwich cache during stroke!
+    // Painting tools: bake Smart Source cleanly before pixel edits & use fast sandwich cache!
     if (layer.kind === 'adjustment' && !doc.editingMask) {
       if (!layer.maskCanvas) {
         doc.addMaskToActiveLayer(false);
       } else {
         doc.editingMask = true;
       }
+    }
+    if (!doc.editingMask && layer.smartSource) {
+      doc.bakeSmartSource(layer);
     }
 
     doc.beginFastInteraction();
@@ -2870,6 +3651,144 @@ class ProStudioMobileApp {
       return;
     }
 
+    // ---- Photoshop Move & Interactive Free Transform (Move + Smart Guides + 8-Handle Scale + Rotate) ----
+    if (drag.type === 'transform') {
+      const lyr = drag.layer;
+      const ob = drag.origBounds;
+      drag.changed = true;
+      this.activeSmartGuides = [];
+
+      let newCx = ob.cx;
+      let newCy = ob.cy;
+      let newW = ob.w;
+      let newH = ob.h;
+      let newRot = ob.rotation || 0;
+
+      if (drag.mode === 'move') {
+        let dx = pt.x - drag.startX;
+        let dy = pt.y - drag.startY;
+        newCx = ob.cx + dx;
+        newCy = ob.cy + dy;
+
+        // Photoshop Smart Guides Snapping to Canvas Center & Edges
+        const snapThresh = Math.max(6, 10 / this.zoom);
+        const cosA = Math.abs(Math.cos(newRot));
+        const sinA = Math.abs(Math.sin(newRot));
+        const halfW = (ob.w * cosA + ob.h * sinA) / 2;
+        const halfH = (ob.w * sinA + ob.h * cosA) / 2;
+
+        const xTargets = [
+          { test: newCx, snapVal: doc.width / 2, guide: doc.width / 2 },
+          { test: newCx - halfW, snapVal: 0, guide: 0 },
+          { test: newCx + halfW, snapVal: doc.width, guide: doc.width }
+        ];
+        for (const t of xTargets) {
+          if (Math.abs(t.test - t.snapVal) < snapThresh) {
+            newCx += t.snapVal - t.test;
+            this.activeSmartGuides.push({ axis: 'v', pos: t.guide });
+            break;
+          }
+        }
+        const yTargets = [
+          { test: newCy, snapVal: doc.height / 2, guide: doc.height / 2 },
+          { test: newCy - halfH, snapVal: 0, guide: 0 },
+          { test: newCy + halfH, snapVal: doc.height, guide: doc.height }
+        ];
+        for (const t of yTargets) {
+          if (Math.abs(t.test - t.snapVal) < snapThresh) {
+            newCy += t.snapVal - t.test;
+            this.activeSmartGuides.push({ axis: 'h', pos: t.guide });
+            break;
+          }
+        }
+      } else if (drag.mode === 'rotate') {
+        const curAngle = Math.atan2(pt.y - ob.cy, pt.x - ob.cx);
+        let delta = curAngle - drag.startAngle;
+        newRot = (ob.rotation || 0) + delta;
+        // Gentle snap to 0°, ±45°, ±90°, ±135°, 180° (within 3°)
+        const deg = (newRot * 180) / Math.PI;
+        const nearest45 = Math.round(deg / 45) * 45;
+        if (Math.abs(deg - nearest45) < 3.0) {
+          newRot = (nearest45 * Math.PI) / 180;
+        }
+      } else {
+        // 8-Handle Anchored Opposite-Corner / Opposite-Edge Scaling in Rotated Local Basis
+        const cos = Math.cos(ob.rotation || 0);
+        const sin = Math.sin(ob.rotation || 0);
+        const dx = pt.x - ob.cx;
+        const dy = pt.y - ob.cy;
+        const lx = dx * cos + dy * sin;
+        const ly = -dx * sin + dy * cos;
+
+        const sx = drag.sx;
+        const sy = drag.sy;
+        const ax = -sx * (ob.w / 2);
+        const ay = -sy * (ob.h / 2);
+
+        const rawW = sx !== 0 ? Math.max(12, sx * (lx - ax)) : ob.w;
+        const rawH = sy !== 0 ? Math.max(12, sy * (ly - ay)) : ob.h;
+        const isCorner = sx !== 0 && sy !== 0;
+
+        if (lyr.kind === 'text') {
+          const sc = isCorner
+            ? Math.max(0.08, (rawW * ob.w + rawH * ob.h) / Math.max(1, ob.w * ob.w + ob.h * ob.h))
+            : sx !== 0
+            ? Math.max(0.08, rawW / Math.max(1, ob.w))
+            : Math.max(0.08, rawH / Math.max(1, ob.h));
+          newW = Math.max(12, ob.w * sc);
+          newH = Math.max(12, ob.h * sc);
+        } else if (isCorner && this.transformLockAspect) {
+          // Exact Photoshop diagonal-projected proportional corner scale
+          const sc = Math.max(12 / Math.max(1, Math.min(ob.w, ob.h)), (rawW * ob.w + rawH * ob.h) / Math.max(1, ob.w * ob.w + ob.h * ob.h));
+          newW = Math.max(12, ob.w * sc);
+          newH = Math.max(12, ob.h * sc);
+        } else {
+          newW = Math.max(12, rawW);
+          newH = Math.max(12, rawH);
+        }
+
+        const newLocalCx = sx !== 0 ? ax + sx * (newW / 2) : 0;
+        const newLocalCy = sy !== 0 ? ay + sy * (newH / 2) : 0;
+        newCx = ob.cx + newLocalCx * cos - newLocalCy * sin;
+        newCy = ob.cy + newLocalCx * sin + newLocalCy * cos;
+      }
+
+      // Apply live to layer's underlying representation
+      if (lyr.smartSource?.canvas) {
+        lyr.smartSource.cx = newCx;
+        lyr.smartSource.cy = newCy;
+        lyr.smartSource.w = newW;
+        lyr.smartSource.h = newH;
+        lyr.smartSource.rotation = newRot;
+        doc.rasterizeSmartLayer(lyr);
+      } else if (lyr.kind === 'shape' && lyr.shapeData) {
+        lyr.shapeData.w = newW;
+        lyr.shapeData.h = newH;
+        lyr.shapeData.x = newCx - newW / 2;
+        lyr.shapeData.y = newCy - newH / 2;
+        lyr.shapeData.rotation = newRot;
+        doc.rasterizeShapeLayer(lyr);
+      } else if (lyr.kind === 'text' && lyr.textData && drag.origText) {
+        const sc = newH / Math.max(1, ob.h);
+        lyr.textData.fontSize = Math.max(8, Math.min(600, Math.round((drag.origText.fontSize || 48) * sc)));
+        lyr.textData.y = newCy;
+        if (lyr.textData.orientation !== 'vertical' && lyr.textData.align === 'left') {
+          lyr.textData.x = newCx - newW / 2;
+        } else if (lyr.textData.orientation !== 'vertical' && lyr.textData.align === 'right') {
+          lyr.textData.x = newCx + newW / 2;
+        } else {
+          lyr.textData.x = newCx;
+        }
+        lyr.textData.rotation = newRot;
+        doc.rasterizeTextLayer(lyr);
+      }
+
+      this._cachedTransformBounds = null;
+      doc.composeFast();
+      this.requestRender();
+      return;
+    }
+
     if (drag.type === 'select') {
       drag.currX = pt.x;
       drag.currY = pt.y;
@@ -2887,14 +3806,37 @@ class ProStudioMobileApp {
       return;
     }
 
+    // ---- Photoshop Perspective Crop Dragging (Corner + Loupe / Edge / Inside Move / Fresh Draw) ----
     if (drag.type === 'perspectiveCrop' && this.perspectiveQuad) {
       const dx = pt.x - drag.startX;
       const dy = pt.y - drag.startY;
-      if (drag.cornerIdx >= 0) {
-        this.perspectiveQuad[drag.cornerIdx] = {
-          x: Math.max(-doc.width * 0.2, Math.min(doc.width * 1.2, Math.round(drag.origQuad[drag.cornerIdx].x + dx))),
-          y: Math.max(-doc.height * 0.2, Math.min(doc.height * 1.2, Math.round(drag.origQuad[drag.cornerIdx].y + dy)))
-        };
+      const clampX = (v) => Math.max(-doc.width * 0.2, Math.min(doc.width * 1.2, Math.round(v)));
+      const clampY = (v) => Math.max(-doc.height * 0.2, Math.min(doc.height * 1.2, Math.round(v)));
+
+      if (drag.mode === 'corner') {
+        const nx = clampX(drag.origQuad[drag.cornerIdx].x + dx);
+        const ny = clampY(drag.origQuad[drag.cornerIdx].y + dy);
+        this.perspectiveQuad[drag.cornerIdx] = { x: nx, y: ny };
+        const labels = ['TL', 'TR', 'BR', 'BL'];
+        this.showCornerLoupe(nx, ny, e.clientX, e.clientY, labels[drag.cornerIdx]);
+      } else if (drag.mode === 'edge') {
+        const i0 = drag.edgeIdx;
+        const i1 = (drag.edgeIdx + 1) % 4;
+        this.perspectiveQuad[i0] = { x: clampX(drag.origQuad[i0].x + dx), y: clampY(drag.origQuad[i0].y + dy) };
+        this.perspectiveQuad[i1] = { x: clampX(drag.origQuad[i1].x + dx), y: clampY(drag.origQuad[i1].y + dy) };
+      } else if (drag.mode === 'draw') {
+        const x0 = clampX(Math.min(drag.startX, pt.x));
+        const y0 = clampY(Math.min(drag.startY, pt.y));
+        const x1 = clampX(Math.max(drag.startX, pt.x));
+        const y1 = clampY(Math.max(drag.startY, pt.y));
+        if (x1 - x0 >= 24 && y1 - y0 >= 24) {
+          this.perspectiveQuad = [
+            { x: x0, y: y0 },
+            { x: x1, y: y0 },
+            { x: x1, y: y1 },
+            { x: x0, y: y1 }
+          ];
+        }
       } else {
         this.perspectiveQuad = drag.origQuad.map((p) => ({
           x: Math.round(p.x + dx),
@@ -2906,48 +3848,147 @@ class ProStudioMobileApp {
       return;
     }
 
+    // ---- Photoshop 8-Handle Slice Select Dragging ----
     if (drag.type === 'sliceEdit' && drag.slice) {
       const dx = pt.x - drag.startX;
       const dy = pt.y - drag.startY;
       const or = drag.origRect;
+      const minS = 16;
+
       if (drag.mode === 'move') {
         drag.slice.x = Math.max(0, Math.min(doc.width - or.w, Math.round(or.x + dx)));
         drag.slice.y = Math.max(0, Math.min(doc.height - or.h, Math.round(or.y + dy)));
       } else {
-        drag.slice.w = Math.max(16, Math.min(doc.width - or.x, Math.round(or.w + dx)));
-        drag.slice.h = Math.max(16, Math.min(doc.height - or.y, Math.round(or.h + dy)));
+        let l = or.x;
+        let t = or.y;
+        let r = or.x + or.w;
+        let b = or.y + or.h;
+
+        if (drag.mode.includes('w')) l = Math.max(0, Math.min(r - minS, Math.round(or.x + dx)));
+        if (drag.mode.includes('e')) r = Math.min(doc.width, Math.max(l + minS, Math.round(or.x + or.w + dx)));
+        if (drag.mode.includes('n')) t = Math.max(0, Math.min(b - minS, Math.round(or.y + dy)));
+        if (drag.mode.includes('s')) b = Math.min(doc.height, Math.max(t + minS, Math.round(or.y + or.h + dy)));
+
+        drag.slice.x = l;
+        drag.slice.y = t;
+        drag.slice.w = Math.max(minS, r - l);
+        drag.slice.h = Math.max(minS, b - t);
       }
       this.requestRender();
       return;
     }
 
+    // ---- Photoshop 8-Handle Crop Tool + Strict Live Aspect Ratio + Outside Straighten Rotation ----
     if (drag.type === 'crop' && this.cropBox) {
+      const ob = drag.origBox;
+      const snapEdge = (val, targets) => {
+        const thresh = Math.max(6, 9 / this.zoom);
+        for (const t of targets) {
+          if (Math.abs(val - t) < thresh) return t;
+        }
+        return val;
+      };
+
+      if (drag.mode === 'rotate') {
+        const cx = ob.x + ob.w / 2;
+        const cy = ob.y + ob.h / 2;
+        const curAngle = Math.atan2(pt.y - cy, pt.x - cx);
+        let deltaDeg = ((curAngle - drag.startAngle) * 180) / Math.PI;
+        while (deltaDeg > 180) deltaDeg -= 360;
+        while (deltaDeg < -180) deltaDeg += 360;
+        let ang = drag.origCropAngle - deltaDeg;
+        if (Math.abs(ang) < 1.2) ang = 0;
+        ang = Math.max(-45, Math.min(45, Math.round(ang * 2) / 2));
+        this.cropAngle = ang;
+        const angSlider = document.getElementById('crop-angle-slider');
+        const angLbl = document.getElementById('crop-angle-lbl');
+        if (angSlider) angSlider.value = String(ang);
+        if (angLbl) angLbl.textContent = `∠ ${ang.toFixed(1)}°`;
+        this.renderFloatingContextBar();
+        this.requestRender();
+        return;
+      }
+
       const dx = pt.x - drag.startX;
       const dy = pt.y - drag.startY;
-      const ob = drag.origBox;
+      const minX = -doc.width * 0.5;
+      const maxX = doc.width * 1.5;
+      const minY = -doc.height * 0.5;
+      const maxY = doc.height * 1.5;
+      const minS = 24;
+
       if (drag.mode === 'move') {
-        this.cropBox.x = Math.max(0, Math.min(doc.width - ob.w, ob.x + dx));
-        this.cropBox.y = Math.max(0, Math.min(doc.height - ob.h, ob.y + dy));
-      } else if (drag.mode === 'se') {
-        this.cropBox.w = Math.max(32, Math.min(doc.width - ob.x, ob.w + dx));
-        this.cropBox.h = Math.max(32, Math.min(doc.height - ob.y, ob.h + dy));
-      } else if (drag.mode === 'nw') {
-        const nx = Math.max(0, Math.min(ob.x + ob.w - 32, ob.x + dx));
-        const ny = Math.max(0, Math.min(ob.y + ob.h - 32, ob.y + dy));
-        this.cropBox.w = ob.w - (nx - ob.x);
-        this.cropBox.h = ob.h - (ny - ob.y);
-        this.cropBox.x = nx;
-        this.cropBox.y = ny;
-      } else if (drag.mode === 'ne') {
-        const ny = Math.max(0, Math.min(ob.y + ob.h - 32, ob.y + dy));
-        this.cropBox.w = Math.max(32, Math.min(doc.width - ob.x, ob.w + dx));
-        this.cropBox.h = ob.h - (ny - ob.y);
-        this.cropBox.y = ny;
-      } else if (drag.mode === 'sw') {
-        const nx = Math.max(0, Math.min(ob.x + ob.w - 32, ob.x + dx));
-        this.cropBox.w = ob.w - (nx - ob.x);
-        this.cropBox.h = Math.max(32, Math.min(doc.height - ob.y, ob.h + dy));
-        this.cropBox.x = nx;
+        let nx = Math.max(minX, Math.min(maxX - ob.w, ob.x + dx));
+        let ny = Math.max(minY, Math.min(maxY - ob.h, ob.y + dy));
+        nx = snapEdge(nx, [0, doc.width - ob.w]);
+        ny = snapEdge(ny, [0, doc.height - ob.h]);
+        this.cropBox.x = Math.round(nx);
+        this.cropBox.y = Math.round(ny);
+      } else {
+        const ratio = this.getCropTargetRatio();
+        if (!ratio) {
+          let l = ob.x;
+          let t = ob.y;
+          let r = ob.x + ob.w;
+          let b = ob.y + ob.h;
+          if (drag.mode.includes('w')) l = Math.min(r - minS, Math.max(minX, snapEdge(ob.x + dx, [0])));
+          if (drag.mode.includes('e')) r = Math.max(l + minS, Math.min(maxX, snapEdge(ob.x + ob.w + dx, [doc.width])));
+          if (drag.mode.includes('n')) t = Math.min(b - minS, Math.max(minY, snapEdge(ob.y + dy, [0])));
+          if (drag.mode.includes('s')) b = Math.max(t + minS, Math.min(maxY, snapEdge(ob.y + ob.h + dy, [doc.height])));
+          this.cropBox = {
+            x: Math.round(l),
+            y: Math.round(t),
+            w: Math.max(minS, Math.round(r - l)),
+            h: Math.max(minS, Math.round(b - t))
+          };
+        } else {
+          // Strict Aspect Ratio Enforcement for ALL 4 Corners AND ALL 4 Edges!
+          let x = ob.x, y = ob.y, w = ob.w, h = ob.h;
+          if (drag.mode === 'nw' || drag.mode === 'ne' || drag.mode === 'sw' || drag.mode === 'se') {
+            const sx = drag.mode.includes('e') ? 1 : -1;
+            const sy = drag.mode.includes('s') ? 1 : -1;
+            const ax = sx > 0 ? ob.x : ob.x + ob.w;
+            const ay = sy > 0 ? ob.y : ob.y + ob.h;
+            const rawW = Math.max(minS, sx * (pt.x - ax));
+            const rawH = Math.max(minS, sy * (pt.y - ay));
+            h = Math.max(minS, (rawW * ratio + rawH) / (ratio * ratio + 1));
+            w = h * ratio;
+            if (w < minS) {
+              w = minS;
+              h = w / ratio;
+            }
+            const maxSpan = Math.max(doc.width, doc.height) * 1.8;
+            if (w > maxSpan) {
+              w = maxSpan;
+              h = w / ratio;
+            }
+            if (h > maxSpan) {
+              h = maxSpan;
+              w = h * ratio;
+            }
+            x = sx > 0 ? ax : ax - w;
+            y = sy > 0 ? ay : ay - h;
+          } else if (drag.mode === 'e' || drag.mode === 'w') {
+            const sx = drag.mode === 'e' ? 1 : -1;
+            const ax = sx > 0 ? ob.x : ob.x + ob.w;
+            const cy = ob.y + ob.h / 2;
+            w = Math.max(minS, Math.min(doc.width * 1.8, sx * (pt.x - ax)));
+            h = w / ratio;
+            x = sx > 0 ? ax : ax - w;
+            y = cy - h / 2;
+          } else if (drag.mode === 'n' || drag.mode === 's') {
+            const sy = drag.mode === 's' ? 1 : -1;
+            const ay = sy > 0 ? ob.y : ob.y + ob.h;
+            const cx = ob.x + ob.w / 2;
+            h = Math.max(minS, Math.min(doc.height * 1.8, sy * (pt.y - ay)));
+            w = h * ratio;
+            x = cx - w / 2;
+            y = sy > 0 ? ay : ay - h;
+          }
+          const rw = Math.max(minS, Math.round(w));
+          const rh = Math.max(minS, Math.round(rw / ratio));
+          this.cropBox = { x: Math.round(x), y: Math.round(y), w: rw, h: rh };
+        }
       }
       this.renderFloatingContextBar();
       this.requestRender();
@@ -2980,19 +4021,32 @@ class ProStudioMobileApp {
       return;
     }
 
+    if (drag.type === 'perspectiveCrop') {
+      document.getElementById('pixel-loupe').hidden = true;
+      this.renderFloatingContextBar();
+      this.requestRender();
+      return;
+    }
+
+    if (drag.type === 'transform') {
+      this.activeSmartGuides = [];
+      this._cachedTransformBounds = null;
+      doc.endFastInteraction();
+      if (drag.changed) {
+        const label =
+          drag.mode === 'move' ? 'Move Layer' : drag.mode === 'rotate' ? 'Rotate Layer' : 'Scale Layer';
+        doc.pushHistory(label);
+        this.session.notify('layer.transformed');
+      } else {
+        this.requestRender();
+      }
+      return;
+    }
+
     if (drag.type === 'move') {
       doc.endFastInteraction();
       if (Math.abs(drag.dx) > 1 || Math.abs(drag.dy) > 1) {
-        const layer = doc.activeLayer;
-        if (layer?.textData && drag.origTextPos && !doc.editingMask) {
-          layer.textData.x = Math.round(drag.origTextPos.x + drag.dx);
-          layer.textData.y = Math.round(drag.origTextPos.y + drag.dy);
-        }
-        if (layer?.shapeData && drag.origShapePos && !doc.editingMask) {
-          layer.shapeData.x = Math.round(drag.origShapePos.x + drag.dx);
-          layer.shapeData.y = Math.round(drag.origShapePos.y + drag.dy);
-        }
-        doc.pushHistory('Move Layer');
+        doc.pushHistory('Move Layer Mask');
       }
       this.session.notify('layer.moved');
       return;
@@ -3034,14 +4088,24 @@ class ProStudioMobileApp {
     }
 
     if (drag.type === 'gradient') {
+      let c1 = this.fgColor;
+      let c2 = this.bgColor;
+      if (drag.isMask) {
+        const r1 = Algorithms.hexToRgb(c1);
+        const l1 = Math.round(0.299 * r1.r + 0.587 * r1.g + 0.114 * r1.b);
+        c1 = Algorithms.rgbToHex(l1, l1, l1);
+        const r2 = Algorithms.hexToRgb(c2);
+        const l2 = Math.round(0.299 * r2.r + 0.587 * r2.g + 0.114 * r2.b);
+        c2 = Algorithms.rgbToHex(l2, l2, l2);
+      }
       this.brush.drawGradient(
         drag.targetCanvas,
         drag.startX,
         drag.startY,
         drag.currX,
         drag.currY,
-        this.fgColor,
-        this.bgColor,
+        c1,
+        c2,
         doc.hasSelection ? doc.selectionCanvas : null
       );
       doc.pushHistory('Gradient Fill');
@@ -3119,6 +4183,16 @@ class ProStudioMobileApp {
     ctx.translate(this.panX, this.panY);
     ctx.scale(this.zoom, this.zoom);
 
+    const isCropRotated = this.activeTool === 'crop' && this.cropBox && Math.abs(this.cropAngle) > 0.05;
+    ctx.save();
+    if (isCropRotated) {
+      const rcx = this.cropBox.x + this.cropBox.w / 2;
+      const rcy = this.cropBox.y + this.cropBox.h / 2;
+      ctx.translate(rcx, rcy);
+      ctx.rotate((-this.cropAngle * Math.PI) / 180);
+      ctx.translate(-rcx, -rcy);
+    }
+
     this.drawCheckerboard(ctx, doc.width, doc.height);
 
     ctx.imageSmoothingEnabled = this.zoom < 3.0;
@@ -3133,9 +4207,10 @@ class ProStudioMobileApp {
       ctx.drawImage(doc.compositeCanvas, 0, 0);
     }
 
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
     ctx.lineWidth = 1 / this.zoom;
     ctx.strokeRect(0, 0, doc.width, doc.height);
+    ctx.restore();
 
     this.drawSelectionOverlay(ctx, doc);
     this.drawLiveToolDragOverlay(ctx);
@@ -3283,59 +4358,200 @@ class ProStudioMobileApp {
       }
       ctx.restore();
     } else if (drag.type === 'shape') {
+      const x = Math.min(drag.startX, drag.currX);
+      const y = Math.min(drag.startY, drag.currY);
+      const w = Math.abs(drag.currX - drag.startX);
+      const h = Math.abs(drag.currY - drag.startY);
+      const cx = x + w / 2;
+      const cy = y + h / 2;
+
       ctx.save();
       ctx.strokeStyle = '#378ef0';
       ctx.fillStyle = 'rgba(55, 142, 240, 0.25)';
       ctx.lineWidth = 2 / this.zoom;
-      ctx.strokeRect(
-        Math.min(drag.startX, drag.currX),
-        Math.min(drag.startY, drag.currY),
-        Math.abs(drag.currX - drag.startX),
-        Math.abs(drag.currY - drag.startY)
-      );
+      ctx.beginPath();
+      if (this.shapeMode === 'ellipse') {
+        ctx.ellipse(cx, cy, Math.max(1, w / 2), Math.max(1, h / 2), 0, 0, Math.PI * 2);
+      } else if (this.shapeMode === 'polygon' || this.shapeMode === 'star') {
+        const pts = this.shapeMode === 'star' ? 5 : 6;
+        const steps = this.shapeMode === 'star' ? pts * 2 : pts;
+        const orx = Math.max(1, w / 2);
+        const ory = Math.max(1, h / 2);
+        const irx = this.shapeMode === 'star' ? orx * 0.45 : orx;
+        const iry = this.shapeMode === 'star' ? ory * 0.45 : ory;
+        for (let i = 0; i < steps; i++) {
+          const rx = this.shapeMode === 'star' && i % 2 === 1 ? irx : orx;
+          const ry = this.shapeMode === 'star' && i % 2 === 1 ? iry : ory;
+          const a = (i * Math.PI * 2) / steps - Math.PI / 2;
+          const px = cx + rx * Math.cos(a);
+          const py = cy + ry * Math.sin(a);
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+      } else {
+        ctx.rect(x, y, w, h);
+      }
+      ctx.fill();
+      ctx.stroke();
       ctx.restore();
     }
   }
 
   drawTransformHandles(ctx, doc) {
-    const pad = 20;
-    const x = pad, y = pad, w = doc.width - pad * 2, h = doc.height - pad * 2;
-    ctx.save();
-    ctx.strokeStyle = '#378ef0';
-    ctx.lineWidth = 1.5 / this.zoom;
-    ctx.strokeRect(x, y, w, h);
+    const bounds = this.getActiveTransformBounds();
+    if (!bounds) return;
 
-    const hs = 9 / this.zoom;
+    ctx.save();
+
+    // 1. Photoshop Magenta Smart Guides during Move snap
+    if (this.activeSmartGuides && this.activeSmartGuides.length > 0) {
+      ctx.save();
+      ctx.strokeStyle = '#ff2bd6';
+      ctx.lineWidth = 1.4 / this.zoom;
+      ctx.setLineDash([6 / this.zoom, 4 / this.zoom]);
+      ctx.beginPath();
+      for (const g of this.activeSmartGuides) {
+        if (g.axis === 'v') {
+          ctx.moveTo(g.pos, -doc.height * 0.5);
+          ctx.lineTo(g.pos, doc.height * 1.5);
+        } else {
+          ctx.moveTo(-doc.width * 0.5, g.pos);
+          ctx.lineTo(doc.width * 1.5, g.pos);
+        }
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    const { cx, cy, w, h, rotation } = bounds;
+    const hw = w / 2;
+    const hh = h / 2;
+    const rotStem = Math.max(22, 34 / this.zoom);
+
+    // 2. Rotated Transform Box, Rotation Lollipop Handle, Center Pivot & 8 Scale Handles
+    ctx.save();
+    ctx.translate(cx, cy);
+    if (rotation) ctx.rotate(rotation);
+
+    // Outer subtle shadow border for visibility on bright backgrounds
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.lineWidth = 3.2 / this.zoom;
+    ctx.strokeRect(-hw, -hh, w, h);
+
+    // Crisp Photoshop Blue bounding box
+    ctx.strokeStyle = '#378ef0';
+    ctx.lineWidth = 1.8 / this.zoom;
+    ctx.strokeRect(-hw, -hh, w, h);
+
+    // Top Rotation Stem + Lollipop Handle (↻)
+    ctx.beginPath();
+    ctx.moveTo(0, -hh);
+    ctx.lineTo(0, -hh - rotStem);
+    ctx.stroke();
+
+    const rotR = 9.5 / this.zoom;
+    ctx.fillStyle = '#378ef0';
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.8 / this.zoom;
+    ctx.beginPath();
+    ctx.arc(0, -hh - rotStem, rotR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Draw crisp curved arrow glyph inside rotation handle
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.4 / this.zoom;
+    ctx.beginPath();
+    ctx.arc(0, -hh - rotStem, rotR * 0.48, -Math.PI * 0.7, Math.PI * 0.65);
+    ctx.stroke();
+
+    // Center Reference Pivot Crosshair (⊕)
+    const pr = 5.5 / this.zoom;
+    ctx.strokeStyle = '#378ef0';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.lineWidth = 1.4 / this.zoom;
+    ctx.beginPath();
+    ctx.arc(0, 0, pr, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-pr * 1.4, 0);
+    ctx.lineTo(pr * 1.4, 0);
+    ctx.moveTo(0, -pr * 1.4);
+    ctx.lineTo(0, pr * 1.4);
+    ctx.stroke();
+
+    // 8 Interactive Square Scale Handles (NW, N, NE, E, SE, S, SW, W)
+    const hs = 11 / this.zoom;
     const pts = [
-      [x, y], [x + w / 2, y], [x + w, y],
-      [x, y + h / 2], [x + w, y + h / 2],
-      [x, y + h], [x + w / 2, y + h], [x + w, y + h]
+      [-hw, -hh], [0, -hh], [hw, -hh],
+      [-hw, 0], [hw, 0],
+      [-hw, hh], [0, hh], [hw, hh]
     ];
     ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#378ef0';
+    ctx.lineWidth = 2 / this.zoom;
     for (const [hx, hy] of pts) {
       ctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
       ctx.strokeRect(hx - hs / 2, hy - hs / 2, hs, hs);
     }
+    ctx.restore();
+
+    // 3. Live Dimension & Angle HUD Pill (unrotated in screen orientation)
+    const deg = Math.round(((rotation || 0) * 180) / Math.PI);
+    const label = deg !== 0 ? `${Math.round(w)} × ${Math.round(h)} px · ${deg}°` : `${Math.round(w)} × ${Math.round(h)} px`;
+    const fontSize = 11 / this.zoom;
+    ctx.font = `600 ${fontSize}px "JetBrains Mono", monospace`;
+    const tw = ctx.measureText(label).width;
+    const padX = 7 / this.zoom;
+    const padY = 4 / this.zoom;
+    const cosA = Math.abs(Math.cos(rotation || 0));
+    const sinA = Math.abs(Math.sin(rotation || 0));
+    const aabbHalfH = (w * sinA + h * cosA) / 2;
+    const pillW = tw + padX * 2;
+    const pillH = fontSize + padY * 2;
+    const pillX = cx - pillW / 2;
+    const pillY = cy + aabbHalfH + 10 / this.zoom;
+
+    ctx.fillStyle = 'rgba(18, 20, 26, 0.86)';
+    ctx.strokeStyle = 'rgba(55, 142, 240, 0.75)';
+    ctx.lineWidth = 1.2 / this.zoom;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(pillX, pillY, pillW, pillH, 5 / this.zoom);
+    else ctx.rect(pillX, pillY, pillW, pillH);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, cx, pillY + pillH / 2);
+
     ctx.restore();
   }
 
   drawCropOverlay(ctx, doc) {
     const cb = this.cropBox;
     ctx.save();
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.58)';
-    ctx.fillRect(0, 0, doc.width, cb.y);
-    ctx.fillRect(0, cb.y + cb.h, doc.width, doc.height - (cb.y + cb.h));
-    ctx.fillRect(0, cb.y, cb.x, cb.h);
-    ctx.fillRect(cb.x + cb.w, cb.y, doc.width - (cb.x + cb.w), cb.h);
 
+    // Full-viewport Crop Shield using evenodd path (works even when expanding canvas outside original bounds!)
+    const pad = Math.max(doc.width, doc.height) * 3;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.62)';
+    ctx.beginPath();
+    ctx.rect(-pad, -pad, doc.width + pad * 2, doc.height + pad * 2);
+    ctx.rect(cb.x, cb.y, cb.w, cb.h);
+    ctx.fill('evenodd');
+
+    // Crisp White Crop Border
     ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 2 / this.zoom;
+    ctx.lineWidth = 1.8 / this.zoom;
     ctx.strokeRect(cb.x, cb.y, cb.w, cb.h);
 
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.38)';
+    // Composition Overlay Grid (Thirds / Dense / Diagonal / Golden)
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.42)';
     ctx.lineWidth = 1 / this.zoom;
     ctx.beginPath();
-
     if (this.cropGridMode === 'grid') {
       const steps = 6;
       for (let i = 1; i < steps; i++) {
@@ -3366,16 +4582,74 @@ class ProStudioMobileApp {
     }
     ctx.stroke();
 
-    const cs = 12 / this.zoom;
-    ctx.fillStyle = '#378ef0';
-    for (const [cx, cy] of [
-      [cb.x, cb.y],
-      [cb.x + cb.w, cb.y],
-      [cb.x, cb.y + cb.h],
-      [cb.x + cb.w, cb.y + cb.h]
-    ]) {
-      ctx.fillRect(cx - cs / 2, cy - cs / 2, cs, cs);
-    }
+    // Photoshop Bold White Corner L-Brackets + 4 Edge Midpoint Bars
+    const arm = Math.min(24 / this.zoom, cb.w * 0.28, cb.h * 0.28);
+    const bar = Math.min(26 / this.zoom, cb.w * 0.26, cb.h * 0.26);
+    const thick = 4.2 / this.zoom;
+
+    const strokeHandles = (color, lw) => {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = lw;
+      ctx.lineCap = 'square';
+      ctx.beginPath();
+      // NW corner L
+      ctx.moveTo(cb.x, cb.y + arm);
+      ctx.lineTo(cb.x, cb.y);
+      ctx.lineTo(cb.x + arm, cb.y);
+      // NE corner L
+      ctx.moveTo(cb.x + cb.w - arm, cb.y);
+      ctx.lineTo(cb.x + cb.w, cb.y);
+      ctx.lineTo(cb.x + cb.w, cb.y + arm);
+      // SE corner L
+      ctx.moveTo(cb.x + cb.w, cb.y + cb.h - arm);
+      ctx.lineTo(cb.x + cb.w, cb.y + cb.h);
+      ctx.lineTo(cb.x + cb.w - arm, cb.y + cb.h);
+      // SW corner L
+      ctx.moveTo(cb.x + arm, cb.y + cb.h);
+      ctx.lineTo(cb.x, cb.y + cb.h);
+      ctx.lineTo(cb.x, cb.y + cb.h - arm);
+      // N, S, W, E Edge Bars
+      ctx.moveTo(cb.x + cb.w / 2 - bar / 2, cb.y);
+      ctx.lineTo(cb.x + cb.w / 2 + bar / 2, cb.y);
+      ctx.moveTo(cb.x + cb.w / 2 - bar / 2, cb.y + cb.h);
+      ctx.lineTo(cb.x + cb.w / 2 + bar / 2, cb.y + cb.h);
+      ctx.moveTo(cb.x, cb.y + cb.h / 2 - bar / 2);
+      ctx.lineTo(cb.x, cb.y + cb.h / 2 + bar / 2);
+      ctx.moveTo(cb.x + cb.w, cb.y + cb.h / 2 - bar / 2);
+      ctx.lineTo(cb.x + cb.w, cb.y + cb.h / 2 + bar / 2);
+      ctx.stroke();
+    };
+
+    strokeHandles('rgba(0, 0, 0, 0.55)', thick + 2.4 / this.zoom);
+    strokeHandles('#ffffff', thick);
+
+    // Live Crop Dimension / Ratio / Angle Badge
+    const ratioTag = this.cropAspect && this.cropAspect !== 'free' ? ` (${this.cropAspect})` : '';
+    const angTag = Math.abs(this.cropAngle) > 0.05 ? ` · ${this.cropAngle.toFixed(1)}°` : '';
+    const cropTxt = `${Math.round(cb.w)} × ${Math.round(cb.h)} px${ratioTag}${angTag}`;
+    const fs = 11 / this.zoom;
+    ctx.font = `600 ${fs}px "JetBrains Mono", monospace`;
+    const tw = ctx.measureText(cropTxt).width;
+    const px = 8 / this.zoom;
+    const py = 4 / this.zoom;
+    const pw = tw + px * 2;
+    const ph = fs + py * 2;
+    const bx = cb.x + cb.w / 2 - pw / 2;
+    const by = cb.y - ph - 10 / this.zoom;
+
+    ctx.fillStyle = 'rgba(18, 20, 26, 0.86)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.lineWidth = 1.1 / this.zoom;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(bx, by, pw, ph, 5 / this.zoom);
+    else ctx.rect(bx, by, pw, ph);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(cropTxt, cb.x + cb.w / 2, by + ph / 2);
+
     ctx.restore();
   }
 
@@ -3431,8 +4705,24 @@ class ProStudioMobileApp {
     ctx.closePath();
     ctx.stroke();
 
+    // Draggable edge midpoint handles
+    const er = 4.5 / this.zoom;
+    for (let i = 0; i < 4; i++) {
+      const a = q[i];
+      const b = q[(i + 1) % 4];
+      const mx = (a.x + b.x) / 2;
+      const my = (a.y + b.y) / 2;
+      ctx.fillStyle = strokeCol;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.4 / this.zoom;
+      ctx.beginPath();
+      ctx.arc(mx, my, er, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+
     const labels = ['TL', 'TR', 'BR', 'BL'];
-    const r = 10 / this.zoom;
+    const r = 10.5 / this.zoom;
     ctx.font = `bold ${Math.round(10 / this.zoom)}px Inter, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -3489,14 +4779,22 @@ class ProStudioMobileApp {
       const tag = isAuto ? numStr : `${numStr} ⊞`;
       ctx.fillText(tag, s.x + 4 / this.zoom, s.y + badgeH / 2);
 
+      // Draw ALL 8 interactive resize handles on the selected slice (NW, N, NE, E, SE, S, SW, W)
       if (isSelected && isSliceMode) {
-        const hs = 11 / this.zoom;
+        const hs = 9.5 / this.zoom;
+        const pts = [
+          [s.x, s.y], [s.x + s.w / 2, s.y], [s.x + s.w, s.y],
+          [s.x + s.w, s.y + s.h / 2], [s.x + s.w, s.y + s.h],
+          [s.x + s.w / 2, s.y + s.h], [s.x, s.y + s.h], [s.x, s.y + s.h / 2]
+        ];
         ctx.fillStyle = '#f59e0b';
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 1.5 / this.zoom;
         ctx.setLineDash([]);
-        ctx.fillRect(s.x + s.w - hs / 2, s.y + s.h - hs / 2, hs, hs);
-        ctx.strokeRect(s.x + s.w - hs / 2, s.y + s.h - hs / 2, hs, hs);
+        for (const [hx, hy] of pts) {
+          ctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
+          ctx.strokeRect(hx - hs / 2, hy - hs / 2, hs, hs);
+        }
       }
     }
     ctx.restore();
@@ -5987,8 +7285,28 @@ class ProStudioMobileApp {
       }
 
       const doc = new StudioDoc(w, h, (file.name || 'Phone-Photo').replace(/\.[^.]+$/, '.psd'));
-      const bg = doc.createLayerObject({ name: (file.name || 'Photo').replace(/\.[^.]+$/, ''), kind: 'raster' });
-      bg.canvas.getContext('2d').drawImage(bmp, 0, 0, w, h);
+      const srcCanvas = document.createElement('canvas');
+      srcCanvas.width = w;
+      srcCanvas.height = h;
+      srcCanvas.getContext('2d').drawImage(bmp, 0, 0, w, h);
+
+      const bg = doc.createLayerObject({
+        name: (file.name || 'Photo').replace(/\.[^.]+$/, ''),
+        kind: 'raster',
+        smartSource: {
+          canvas: srcCanvas,
+          cx: w / 2,
+          cy: h / 2,
+          w,
+          h,
+          origW: w,
+          origH: h,
+          rotation: 0,
+          flipX: false,
+          flipY: false
+        }
+      });
+      doc.rasterizeSmartLayer(bg);
       doc.layers.push(bg);
       doc.activeLayerId = bg.id;
       doc.compose();
@@ -6036,14 +7354,49 @@ class ProStudioMobileApp {
       this._userCreatedOrOpenedDoc = true;
       this._initialLoadComplete = true;
       const bmp = await this.decodeImageFileToDrawable(file);
-      const imgW = bmp.width || bmp.naturalWidth || doc.width;
-      const imgH = bmp.height || bmp.naturalHeight || doc.height;
-      const lyr = doc.createLayerObject({ name: (file.name || 'Phone Photo').replace(/\.[^.]+$/, ''), kind: 'raster' });
-      const ctx = lyr.canvas.getContext('2d');
-      const scale = Math.min(doc.width / imgW, doc.height / imgH, 1);
-      const w = Math.round(imgW * scale);
-      const h = Math.round(imgH * scale);
-      ctx.drawImage(bmp, Math.round((doc.width - w) / 2), Math.round((doc.height - h) / 2), w, h);
+      const rawW = bmp.width || bmp.naturalWidth || doc.width;
+      const rawH = bmp.height || bmp.naturalHeight || doc.height;
+
+      // Preserve crisp Smart Source capped at 2048px for 60fps mobile non-destructive scaling & rotation!
+      const maxDim = 2048;
+      let origW = rawW;
+      let origH = rawH;
+      if (origW > maxDim || origH > maxDim) {
+        const capRatio = maxDim / Math.max(origW, origH);
+        origW = Math.max(32, Math.round(origW * capRatio));
+        origH = Math.max(32, Math.round(origH * capRatio));
+      }
+
+      const srcCanvas = document.createElement('canvas');
+      srcCanvas.width = origW;
+      srcCanvas.height = origH;
+      const sCtx = srcCanvas.getContext('2d');
+      sCtx.imageSmoothingEnabled = true;
+      sCtx.imageSmoothingQuality = 'high';
+      sCtx.drawImage(bmp, 0, 0, origW, origH);
+
+      // Fit nicely inside 88% of canvas if larger than canvas so all 8 scale handles + rotation handle are immediately grabbable
+      const fitScale = Math.min((doc.width * 0.88) / origW, (doc.height * 0.88) / origH, 1);
+      const w = Math.max(24, Math.round(origW * fitScale));
+      const h = Math.max(24, Math.round(origH * fitScale));
+
+      const lyr = doc.createLayerObject({
+        name: (file.name || 'Phone Photo').replace(/\.[^.]+$/, ''),
+        kind: 'raster',
+        smartSource: {
+          canvas: srcCanvas,
+          cx: doc.width / 2,
+          cy: doc.height / 2,
+          w,
+          h,
+          origW,
+          origH,
+          rotation: 0,
+          flipX: false,
+          flipY: false
+        }
+      });
+      doc.rasterizeSmartLayer(lyr);
 
       const activeIdx = doc.layers.findIndex((l) => l.id === doc.activeLayerId);
       if (activeIdx >= 0) {
@@ -6053,13 +7406,14 @@ class ProStudioMobileApp {
       }
       doc.activeLayerId = lyr.id;
       doc.editingMask = false;
+      this._cachedTransformBounds = null;
       doc.pushHistory(`Import ${lyr.name}`);
       this.newDocScreen?.close();
       this.closeSheet();
-      // Auto-select Move & Transform tool so user can immediately drag/resize their imported photo!
+      // Auto-select Move & Free Transform tool so user can immediately scale, rotate & position their photo!
       this.selectTool('move');
       this.session.notify('layer.placed');
-      this.showToast(`📱 Imported "${lyr.name}" as layer — drag on canvas to move!`);
+      this.showToast(`📱 Imported "${lyr.name}" — drag corners to scale, top handle to rotate!`);
     } catch (err) {
       this.showToast(`Could not import image: ${err.message}`);
     }
@@ -6283,6 +7637,20 @@ class ProStudioMobileApp {
         textData: l.textData ? structuredClone(l.textData) : null,
         shapeData: l.shapeData ? structuredClone(l.shapeData) : null,
         styles: l.styles ? structuredClone(l.styles) : null,
+        smartSource: l.smartSource?.canvas
+          ? {
+              canvasDataUrl: l.smartSource.canvas.toDataURL('image/png'),
+              cx: l.smartSource.cx,
+              cy: l.smartSource.cy,
+              w: l.smartSource.w,
+              h: l.smartSource.h,
+              origW: l.smartSource.origW || l.smartSource.canvas.width,
+              origH: l.smartSource.origH || l.smartSource.canvas.height,
+              rotation: l.smartSource.rotation || 0,
+              flipX: Boolean(l.smartSource.flipX),
+              flipY: Boolean(l.smartSource.flipY)
+            }
+          : null,
         canvasDataUrl: l.kind === 'adjustment' ? null : l.canvas.toDataURL('image/png'),
         maskDataUrl: l.maskCanvas ? l.maskCanvas.toDataURL('image/png') : null
       }))
@@ -6371,6 +7739,25 @@ class ProStudioMobileApp {
         ? await this.loadDataUrlToCanvas(lSnap.maskDataUrl, doc.width, doc.height)
         : null;
 
+      let restoredSmart = null;
+      if (lSnap.smartSource?.canvasDataUrl) {
+        const sw = Math.max(1, Math.round(lSnap.smartSource.origW || doc.width));
+        const sh = Math.max(1, Math.round(lSnap.smartSource.origH || doc.height));
+        const ssCanvas = await this.loadDataUrlToCanvas(lSnap.smartSource.canvasDataUrl, sw, sh);
+        restoredSmart = {
+          canvas: ssCanvas,
+          cx: lSnap.smartSource.cx ?? doc.width / 2,
+          cy: lSnap.smartSource.cy ?? doc.height / 2,
+          w: lSnap.smartSource.w ?? sw,
+          h: lSnap.smartSource.h ?? sh,
+          origW: sw,
+          origH: sh,
+          rotation: lSnap.smartSource.rotation || 0,
+          flipX: Boolean(lSnap.smartSource.flipX),
+          flipY: Boolean(lSnap.smartSource.flipY)
+        };
+      }
+
       const layer = doc.createLayerObject({
         id: lSnap.id,
         name: lSnap.name,
@@ -6387,8 +7774,12 @@ class ProStudioMobileApp {
         adjustment: lSnap.adjustment,
         textData: lSnap.textData,
         shapeData: lSnap.shapeData,
-        styles: lSnap.styles
+        styles: lSnap.styles,
+        smartSource: restoredSmart
       });
+      if (restoredSmart) {
+        doc.rasterizeSmartLayer(layer);
+      }
       doc.layers.push(layer);
     }
 

@@ -790,13 +790,14 @@ html, body {
 
 .pixel-loupe-hex {
   position: absolute;
-  bottom: 6px;
+  bottom: 8px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(0, 0, 0, 0.78);
+  background: rgba(0, 0, 0, 0.82);
   color: #fff;
   font-family: var(--pc-font-mono);
-  font-size: 9.5px;
+  font-size: 8.5px;
+  white-space: nowrap;
   padding: 1px 5px;
   border-radius: 4px;
 }

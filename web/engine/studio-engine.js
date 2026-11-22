@@ -92,6 +92,20 @@ export class StudioDoc {
       adjustment: opts.adjustment ? structuredClone(opts.adjustment) : null,
       textData: opts.textData ? structuredClone(opts.textData) : null,
       shapeData: opts.shapeData ? structuredClone(opts.shapeData) : null,
+      smartSource: opts.smartSource
+        ? {
+            canvas: opts.smartSource.canvas,
+            cx: opts.smartSource.cx,
+            cy: opts.smartSource.cy,
+            w: opts.smartSource.w,
+            h: opts.smartSource.h,
+            origW: opts.smartSource.origW || opts.smartSource.canvas?.width || this.width,
+            origH: opts.smartSource.origH || opts.smartSource.canvas?.height || this.height,
+            rotation: opts.smartSource.rotation || 0,
+            flipX: Boolean(opts.smartSource.flipX),
+            flipY: Boolean(opts.smartSource.flipY)
+          }
+        : null,
       styles: this.normalizeLayerStyles(opts.styles)
     };
 
@@ -105,7 +119,9 @@ export class StudioDoc {
     }
 
     if (!opts.sourceCanvas) {
-      if (layer.kind === 'text' && layer.textData) {
+      if (layer.smartSource?.canvas) {
+        this.rasterizeSmartLayer(layer);
+      } else if (layer.kind === 'text' && layer.textData) {
         this.rasterizeTextLayer(layer);
       } else if (layer.kind === 'shape' && layer.shapeData) {
         this.rasterizeShapeLayer(layer);
@@ -113,6 +129,168 @@ export class StudioDoc {
     }
 
     return layer;
+  }
+
+  /**
+   * Compute tight non-transparent pixel bounding box { x, y, w, h } of a canvas.
+   */
+  computeCanvasOpaqueBounds(canvas) {
+    const W = canvas.width;
+    const H = canvas.height;
+    if (!W || !H) return null;
+    const data = canvas.getContext('2d').getImageData(0, 0, W, H).data;
+    // Fast 2px stride scan first, then exact edge refinement
+    let minX = W, minY = H, maxX = -1, maxY = -1;
+    for (let y = 0; y < H; y += 2) {
+      const row = y * W;
+      for (let x = 0; x < W; x += 2) {
+        if (data[(row + x) * 4 + 3] > 6) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (maxX < 0) {
+      // Fallback exact 1px scan for ultra-thin strokes
+      for (let y = 0; y < H; y++) {
+        const row = y * W;
+        for (let x = 0; x < W; x++) {
+          if (data[(row + x) * 4 + 3] > 6) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+    } else {
+      minX = Math.max(0, minX - 2);
+      minY = Math.max(0, minY - 2);
+      maxX = Math.min(W - 1, maxX + 2);
+      maxY = Math.min(H - 1, maxY + 2);
+    }
+    if (maxX < minX || maxY < minY) return null;
+    return { x: minX, y: minY, w: Math.max(1, maxX - minX + 1), h: Math.max(1, maxY - minY + 1) };
+  }
+
+  /**
+   * Non-destructively rasterize a Smart Source layer (imported photo or transformed image)
+   * with high-quality resampling, exact scale, rotation, and flip.
+   */
+  rasterizeSmartLayer(layer) {
+    if (!layer || !layer.smartSource || !layer.smartSource.canvas) return;
+    const ss = layer.smartSource;
+    const ctx = layer.canvas.getContext('2d');
+    ctx.clearRect(0, 0, this.width, this.height);
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.translate(ss.cx, ss.cy);
+    if (ss.rotation) ctx.rotate(ss.rotation);
+    ctx.scale(ss.flipX ? -1 : 1, ss.flipY ? -1 : 1);
+    ctx.drawImage(ss.canvas, -ss.w / 2, -ss.h / 2, ss.w, ss.h);
+    ctx.restore();
+  }
+
+  /**
+   * Promote a raster layer to a non-destructive Smart Source tightly wrapped around its
+   * actual visible pixel bounds so moving off-canvas or scaling back and forth NEVER clips or blurs!
+   */
+  ensureSmartSource(layer) {
+    if (!layer || layer.kind !== 'raster') return null;
+    if (layer.smartSource && layer.smartSource.canvas) return layer.smartSource;
+    const bounds = this.computeCanvasOpaqueBounds(layer.canvas);
+    if (!bounds) return null;
+
+    const src = document.createElement('canvas');
+    src.width = bounds.w;
+    src.height = bounds.h;
+    src.getContext('2d').drawImage(layer.canvas, bounds.x, bounds.y, bounds.w, bounds.h, 0, 0, bounds.w, bounds.h);
+
+    layer.smartSource = {
+      canvas: src,
+      cx: bounds.x + bounds.w / 2,
+      cy: bounds.y + bounds.h / 2,
+      w: bounds.w,
+      h: bounds.h,
+      origW: bounds.w,
+      origH: bounds.h,
+      rotation: 0,
+      flipX: false,
+      flipY: false
+    };
+    return layer.smartSource;
+  }
+
+  /**
+   * Bake a Smart Source layer into regular pixels before destructive brush/filter edits.
+   */
+  bakeSmartSource(layer) {
+    if (!layer || !layer.smartSource) return;
+    this.rasterizeSmartLayer(layer);
+    layer.smartSource = null;
+  }
+
+  /**
+   * Measure live bounding box { cx, cy, w, h, rotation } for ANY layer type (Smart Image, Text, Shape, Raster).
+   */
+  getLayerTransformBounds(layer) {
+    if (!layer || layer.kind === 'adjustment') return null;
+
+    if (layer.smartSource && layer.smartSource.canvas) {
+      const ss = layer.smartSource;
+      return { cx: ss.cx, cy: ss.cy, w: Math.max(8, ss.w), h: Math.max(8, ss.h), rotation: ss.rotation || 0 };
+    }
+
+    if (layer.kind === 'shape' && layer.shapeData) {
+      const sd = layer.shapeData;
+      const w = Math.max(8, Math.abs(sd.w ?? this.width * 0.5));
+      const h = Math.max(8, Math.abs(sd.h ?? this.height * 0.5));
+      const x = sd.x ?? this.width * 0.25;
+      const y = sd.y ?? this.height * 0.25;
+      return { cx: x + w / 2, cy: y + h / 2, w, h, rotation: sd.rotation || 0 };
+    }
+
+    if (layer.kind === 'text' && layer.textData) {
+      const td = layer.textData;
+      const mCtx = this._measureCtx || (this._measureCtx = document.createElement('canvas').getContext('2d'));
+      const size = td.fontSize || 48;
+      mCtx.font = `${td.italic ? 'italic' : 'normal'} ${td.fontWeight || '600'} ${size}px ${td.fontFamily || 'Inter, sans-serif'}`;
+      const lines = String(td.text || ' ').split('\n');
+      const lh = size * (td.lineHeight || 1.25);
+      const bx = td.x ?? this.width / 2;
+      const by = td.y ?? this.height / 2;
+
+      let w = 0;
+      let h = 0;
+      if (td.orientation === 'vertical') {
+        w = Math.max(size, lines.length * size * (td.lineHeight || 1.3));
+        const maxChars = Math.max(1, ...lines.map((l) => Array.from(l).length));
+        h = Math.max(size, maxChars * (size + (td.tracking || 0)));
+      } else {
+        for (const line of lines) {
+          const mw = mCtx.measureText(line).width + Math.max(0, line.length - 1) * (td.tracking || 0);
+          if (mw > w) w = mw;
+        }
+        w = Math.max(size, w + 12);
+        h = Math.max(size, lines.length * lh);
+      }
+
+      let cx = bx;
+      if (td.orientation !== 'vertical') {
+        if (td.align === 'left') cx = bx + w / 2;
+        else if (td.align === 'right') cx = bx - w / 2;
+      }
+      return { cx, cy: by, w, h, rotation: td.rotation || 0 };
+    }
+
+    const bounds = this.computeCanvasOpaqueBounds(layer.canvas);
+    if (!bounds) {
+      return { cx: this.width / 2, cy: this.height / 2, w: this.width * 0.8, h: this.height * 0.8, rotation: 0 };
+    }
+    return { cx: bounds.x + bounds.w / 2, cy: bounds.y + bounds.h / 2, w: bounds.w, h: bounds.h, rotation: 0 };
   }
 
   /**
@@ -140,6 +318,24 @@ export class StudioDoc {
 
     const baseX = td.x ?? this.width / 2;
     const baseY = td.y ?? this.height / 2;
+
+    if (td.rotation || td.flipX || td.flipY) {
+      let rotCx = baseX;
+      if (orientation !== 'vertical' && (td.align === 'left' || td.align === 'right')) {
+        const tmpLines = String(td.text || ' ').split('\n');
+        let maxW = 0;
+        for (const ln of tmpLines) {
+          const mw = ctx.measureText(ln).width + Math.max(0, ln.length - 1) * tracking;
+          if (mw > maxW) maxW = mw;
+        }
+        const bw = Math.max(size, maxW + 12);
+        rotCx = td.align === 'left' ? baseX + bw / 2 : baseX - bw / 2;
+      }
+      ctx.translate(rotCx, baseY);
+      if (td.rotation) ctx.rotate(td.rotation);
+      ctx.scale(td.flipX ? -1 : 1, td.flipY ? -1 : 1);
+      ctx.translate(-rotCx, -baseY);
+    }
 
     if (orientation === 'vertical') {
       const cols = String(td.text || '').split('\n');
@@ -249,19 +445,29 @@ export class StudioDoc {
     const cx = x + w / 2;
     const cy = y + h / 2;
 
+    if (sd.rotation || sd.flipX || sd.flipY) {
+      ctx.translate(cx, cy);
+      if (sd.rotation) ctx.rotate(sd.rotation);
+      ctx.scale(sd.flipX ? -1 : 1, sd.flipY ? -1 : 1);
+      ctx.translate(-cx, -cy);
+    }
+
     ctx.beginPath();
     if (sd.shapeType === 'ellipse') {
       ctx.ellipse(cx, cy, Math.abs(w / 2), Math.abs(h / 2), 0, 0, Math.PI * 2);
     } else if (sd.shapeType === 'polygon' || sd.shapeType === 'star') {
       const points = sd.points || (sd.shapeType === 'star' ? 5 : 6);
-      const outerR = Math.min(Math.abs(w), Math.abs(h)) / 2;
-      const innerR = sd.shapeType === 'star' ? outerR * 0.45 : outerR;
+      const outerRx = Math.abs(w) / 2;
+      const outerRy = Math.abs(h) / 2;
+      const innerRx = sd.shapeType === 'star' ? outerRx * 0.45 : outerRx;
+      const innerRy = sd.shapeType === 'star' ? outerRy * 0.45 : outerRy;
       const steps = sd.shapeType === 'star' ? points * 2 : points;
       for (let i = 0; i < steps; i++) {
-        const r = sd.shapeType === 'star' && i % 2 === 1 ? innerR : outerR;
+        const rx = sd.shapeType === 'star' && i % 2 === 1 ? innerRx : outerRx;
+        const ry = sd.shapeType === 'star' && i % 2 === 1 ? innerRy : outerRy;
         const a = (i * Math.PI * 2) / steps - Math.PI / 2;
-        const px = cx + r * Math.cos(a);
-        const py = cy + r * Math.sin(a);
+        const px = cx + rx * Math.cos(a);
+        const py = cy + ry * Math.sin(a);
         if (i === 0) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
       }
@@ -499,14 +705,14 @@ export class StudioDoc {
           clipScratch.width = this.width;
           clipScratch.height = this.height;
           const csCtx = clipScratch.getContext('2d');
+          const origBlend = layer.blendMode;
+          layer.blendMode = 'source-over';
           this.renderSingleLayerToContext(layer, csCtx, true);
+          layer.blendMode = origBlend;
           csCtx.globalCompositeOperation = 'destination-in';
           csCtx.drawImage(baseLayer.canvas, 0, 0);
 
-          ctx.save();
-          ctx.globalCompositeOperation = layer.blendMode || 'source-over';
-          ctx.drawImage(clipScratch, 0, 0);
-          ctx.restore();
+          LayerStylesEngine.compositeCanvas(ctx, clipScratch, origBlend || 'source-over', 1.0);
         }
       } else {
         this.renderSingleLayerToContext(layer, ctx, true);
@@ -969,6 +1175,9 @@ export class StudioDoc {
           adjustment: l.adjustment ? structuredClone(l.adjustment) : null,
           textData: l.textData ? structuredClone(l.textData) : null,
           shapeData: l.shapeData ? structuredClone(l.shapeData) : null,
+          smartSource: l.smartSource
+            ? { ...l.smartSource }
+            : null,
           styles: l.styles ? structuredClone(l.styles) : null
         };
       })
@@ -1133,6 +1342,7 @@ export class StudioSession {
         adjustment: src.adjustment,
         textData: src.textData,
         shapeData: src.shapeData,
+        smartSource: src.smartSource ? { ...src.smartSource } : null,
         styles: src.styles
       });
       const idx = this.doc.layers.findIndex((l) => l.id === src.id);
@@ -1159,6 +1369,7 @@ export class StudioSession {
       const top = this.doc.layers[idx];
       const bottom = this.doc.layers[idx - 1];
 
+      this.doc.bakeSmartSource(bottom);
       const bCtx = bottom.canvas.getContext('2d');
       this.doc.renderSingleLayerToContext(top, bCtx, false);
       bottom.kind = 'raster';
@@ -1277,6 +1488,7 @@ export class StudioSession {
         this.doc.pushHistory(`Update ${layer.name}`);
         return;
       }
+      this.doc.bakeSmartSource(layer);
       const ctx = layer.canvas.getContext('2d');
       const imgData = ctx.getImageData(0, 0, this.doc.width, this.doc.height);
       Algorithms.applyAdjustmentToImageData(
@@ -1293,6 +1505,7 @@ export class StudioSession {
       if (!this.doc || !this.doc.activeLayer) return;
       const layer = this.doc.activeLayer;
       if (layer.kind === 'adjustment') return;
+      this.doc.bakeSmartSource(layer);
       const ctx = layer.canvas.getContext('2d');
       const imgData = ctx.getImageData(0, 0, this.doc.width, this.doc.height);
       Algorithms.applyFilterToImageData(
@@ -1334,6 +1547,7 @@ export class StudioSession {
     this.registerCommand('selection.clearPixels', 'Clear Selected Pixels', 'Edit', () => {
       if (!this.doc || !this.doc.activeLayer) return;
       const layer = this.doc.activeLayer;
+      this.doc.bakeSmartSource(layer);
       const ctx = layer.canvas.getContext('2d');
       if (this.doc.hasSelection && this.doc.selectionCanvas) {
         ctx.save();
@@ -1353,21 +1567,24 @@ export class StudioSession {
     this.registerCommand('transform.flipHorizontal', 'Flip Layer Horizontal', 'Transform', () => {
       if (!this.doc || !this.doc.activeLayer) return;
       const layer = this.doc.activeLayer;
-      const temp = document.createElement('canvas');
-      temp.width = this.doc.width;
-      temp.height = this.doc.height;
-      const tCtx = temp.getContext('2d');
-      tCtx.translate(this.doc.width, 0);
-      tCtx.scale(-1, 1);
-      tCtx.drawImage(layer.canvas, 0, 0);
-      const ctx = layer.canvas.getContext('2d');
-      ctx.clearRect(0, 0, this.doc.width, this.doc.height);
-      ctx.drawImage(temp, 0, 0);
-      if (layer.textData && typeof layer.textData.x === 'number') {
-        layer.textData.x = this.doc.width - layer.textData.x;
-      }
-      if (layer.shapeData && typeof layer.shapeData.x === 'number') {
-        layer.shapeData.x = this.doc.width - (layer.shapeData.x + (layer.shapeData.w || 0));
+      if (layer.kind === 'adjustment') return;
+
+      if (layer.smartSource?.canvas) {
+        layer.smartSource.flipX = !layer.smartSource.flipX;
+        layer.smartSource.rotation = -(layer.smartSource.rotation || 0);
+        this.doc.rasterizeSmartLayer(layer);
+      } else if (layer.kind === 'text' && layer.textData) {
+        layer.textData.flipX = !layer.textData.flipX;
+        this.doc.rasterizeTextLayer(layer);
+      } else if (layer.kind === 'shape' && layer.shapeData) {
+        layer.shapeData.flipX = !layer.shapeData.flipX;
+        this.doc.rasterizeShapeLayer(layer);
+      } else {
+        const ss = this.doc.ensureSmartSource(layer);
+        if (ss) {
+          ss.flipX = !ss.flipX;
+          this.doc.rasterizeSmartLayer(layer);
+        }
       }
       this.doc.pushHistory('Flip Horizontal');
     });
@@ -1375,21 +1592,24 @@ export class StudioSession {
     this.registerCommand('transform.flipVertical', 'Flip Layer Vertical', 'Transform', () => {
       if (!this.doc || !this.doc.activeLayer) return;
       const layer = this.doc.activeLayer;
-      const temp = document.createElement('canvas');
-      temp.width = this.doc.width;
-      temp.height = this.doc.height;
-      const tCtx = temp.getContext('2d');
-      tCtx.translate(0, this.doc.height);
-      tCtx.scale(1, -1);
-      tCtx.drawImage(layer.canvas, 0, 0);
-      const ctx = layer.canvas.getContext('2d');
-      ctx.clearRect(0, 0, this.doc.width, this.doc.height);
-      ctx.drawImage(temp, 0, 0);
-      if (layer.textData && typeof layer.textData.y === 'number') {
-        layer.textData.y = this.doc.height - layer.textData.y;
-      }
-      if (layer.shapeData && typeof layer.shapeData.y === 'number') {
-        layer.shapeData.y = this.doc.height - (layer.shapeData.y + (layer.shapeData.h || 0));
+      if (layer.kind === 'adjustment') return;
+
+      if (layer.smartSource?.canvas) {
+        layer.smartSource.flipY = !layer.smartSource.flipY;
+        layer.smartSource.rotation = -(layer.smartSource.rotation || 0);
+        this.doc.rasterizeSmartLayer(layer);
+      } else if (layer.kind === 'text' && layer.textData) {
+        layer.textData.flipY = !layer.textData.flipY;
+        this.doc.rasterizeTextLayer(layer);
+      } else if (layer.kind === 'shape' && layer.shapeData) {
+        layer.shapeData.flipY = !layer.shapeData.flipY;
+        this.doc.rasterizeShapeLayer(layer);
+      } else {
+        const ss = this.doc.ensureSmartSource(layer);
+        if (ss) {
+          ss.flipY = !ss.flipY;
+          this.doc.rasterizeSmartLayer(layer);
+        }
       }
       this.doc.pushHistory('Flip Vertical');
     });
@@ -1415,13 +1635,28 @@ export class StudioSession {
           nCtx.drawImage(c, 0, 0);
           return nc;
         };
-        lyr.canvas = rot(lyr.canvas);
+        if (lyr.smartSource?.canvas) {
+          const ss = lyr.smartSource;
+          const ncx = oldH - ss.cy;
+          const ncy = ss.cx;
+          ss.cx = ncx;
+          ss.cy = ncy;
+          ss.rotation = (ss.rotation || 0) + Math.PI / 2;
+          lyr.canvas = document.createElement('canvas');
+          lyr.canvas.width = oldH;
+          lyr.canvas.height = oldW;
+          this.doc.rasterizeSmartLayer(lyr);
+        } else {
+          lyr.canvas = rot(lyr.canvas);
+        }
         if (lyr.maskCanvas) lyr.maskCanvas = rot(lyr.maskCanvas);
         if (lyr.textData) {
           const tx = lyr.textData.x ?? oldW / 2;
           const ty = lyr.textData.y ?? oldH / 2;
           lyr.textData.x = oldH - ty;
           lyr.textData.y = tx;
+          lyr.textData.rotation = (lyr.textData.rotation || 0) + Math.PI / 2;
+          this.doc.rasterizeTextLayer(lyr);
         }
         if (lyr.shapeData) {
           const sx = lyr.shapeData.x ?? 0;
@@ -1432,54 +1667,119 @@ export class StudioSession {
           lyr.shapeData.y = sx;
           lyr.shapeData.w = sh;
           lyr.shapeData.h = sw;
+          this.doc.rasterizeShapeLayer(lyr);
         }
       }
       this.doc.clearSelection();
       this.doc.pushHistory('Rotate 90° CW');
     });
 
-    this.registerCommand('crop.apply', 'Crop Document', 'Image', ({ x, y, w, h, angle = 0 }) => {
+    this.registerCommand('crop.apply', 'Crop Document', 'Image', ({ x, y, w, h, angle = 0, deleteCroppedPixels = true }) => {
       if (!this.doc) return;
-      const cx = Math.max(0, Math.round(x));
-      const cy = Math.max(0, Math.round(y));
-      const cw = Math.max(16, Math.min(this.doc.width - cx, Math.round(w)));
-      const ch = Math.max(16, Math.min(this.doc.height - cy, Math.round(h)));
+      const cx = Math.round(x);
+      const cy = Math.round(y);
+      const cw = Math.max(16, Math.min(4096, Math.round(w)));
+      const ch = Math.max(16, Math.min(4096, Math.round(h)));
       const rad = (Number(angle || 0) * Math.PI) / 180;
+      const boxCenterX = cx + cw / 2;
+      const boxCenterY = cy + ch / 2;
 
-      const oldW = this.doc.width;
-      const oldH = this.doc.height;
       this.doc.width = cw;
       this.doc.height = ch;
       this.doc.compositeCanvas.width = cw;
       this.doc.compositeCanvas.height = ch;
 
+      const rotatePtAroundBox = (px, py) => {
+        if (Math.abs(rad) <= 0.001) return { x: px - cx, y: py - cy };
+        const dx = px - boxCenterX;
+        const dy = py - boxCenterY;
+        const cosA = Math.cos(-rad);
+        const sinA = Math.sin(-rad);
+        return {
+          x: cw / 2 + dx * cosA - dy * sinA,
+          y: ch / 2 + dx * sinA + dy * cosA
+        };
+      };
+
       for (const lyr of this.doc.layers) {
         const cropCanvas = (c) => {
           if (!c) return null;
-          let src = c;
-          if (Math.abs(rad) > 0.001) {
-            const rotC = document.createElement('canvas');
-            rotC.width = oldW;
-            rotC.height = oldH;
-            const rCtx = rotC.getContext('2d');
-            rCtx.translate(oldW / 2, oldH / 2);
-            rCtx.rotate(-rad);
-            rCtx.drawImage(c, -oldW / 2, -oldH / 2);
-            src = rotC;
-          }
           const nc = document.createElement('canvas');
           nc.width = cw;
           nc.height = ch;
-          nc.getContext('2d').drawImage(src, cx, cy, cw, ch, 0, 0, cw, ch);
+          const nCtx = nc.getContext('2d');
+          nCtx.imageSmoothingEnabled = true;
+          nCtx.imageSmoothingQuality = 'high';
+          if (Math.abs(rad) > 0.001) {
+            // Rotate directly around crop box center into target canvas — ZERO premature corner clipping!
+            nCtx.save();
+            nCtx.translate(cw / 2, ch / 2);
+            nCtx.rotate(-rad);
+            nCtx.drawImage(c, -boxCenterX, -boxCenterY);
+            nCtx.restore();
+          } else {
+            nCtx.drawImage(c, -cx, -cy);
+          }
           return nc;
         };
-        lyr.canvas = cropCanvas(lyr.canvas);
+
+        if (!deleteCroppedPixels && lyr.kind === 'raster') {
+          this.doc.ensureSmartSource(lyr);
+        }
+
+        if (lyr.smartSource?.canvas && !deleteCroppedPixels) {
+          const ss = lyr.smartSource;
+          const np = rotatePtAroundBox(ss.cx, ss.cy);
+          ss.cx = np.x;
+          ss.cy = np.y;
+          ss.rotation = (ss.rotation || 0) - rad;
+          lyr.canvas = document.createElement('canvas');
+          lyr.canvas.width = cw;
+          lyr.canvas.height = ch;
+          this.doc.rasterizeSmartLayer(lyr);
+        } else {
+          if (lyr.smartSource) lyr.smartSource = null;
+          lyr.canvas = cropCanvas(lyr.canvas);
+        }
+
         if (lyr.maskCanvas) lyr.maskCanvas = cropCanvas(lyr.maskCanvas);
+
         if (lyr.textData) {
-          lyr.textData.x -= cx;
-          lyr.textData.y -= cy;
+          const np = rotatePtAroundBox(lyr.textData.x ?? boxCenterX, lyr.textData.y ?? boxCenterY);
+          lyr.textData.x = np.x;
+          lyr.textData.y = np.y;
+          if (Math.abs(rad) > 0.001) {
+            lyr.textData.rotation = (lyr.textData.rotation || 0) - rad;
+          }
+          this.doc.rasterizeTextLayer(lyr);
+        }
+
+        if (lyr.shapeData) {
+          const scx = (lyr.shapeData.x ?? 0) + (lyr.shapeData.w ?? 0) / 2;
+          const scy = (lyr.shapeData.y ?? 0) + (lyr.shapeData.h ?? 0) / 2;
+          const np = rotatePtAroundBox(scx, scy);
+          lyr.shapeData.x = np.x - (lyr.shapeData.w ?? 0) / 2;
+          lyr.shapeData.y = np.y - (lyr.shapeData.h ?? 0) / 2;
+          if (Math.abs(rad) > 0.001) {
+            lyr.shapeData.rotation = (lyr.shapeData.rotation || 0) - rad;
+          }
+          this.doc.rasterizeShapeLayer(lyr);
         }
       }
+
+      // Update user slices to match cropped bounds
+      if (this.doc.slices.length > 0) {
+        this.doc.slices = this.doc.slices
+          .map((s) => {
+            const nx = Math.max(0, s.x - cx);
+            const ny = Math.max(0, s.y - cy);
+            const rx = Math.min(cw, s.x + s.w - cx);
+            const by = Math.min(ch, s.y + s.h - cy);
+            return { ...s, x: nx, y: ny, w: rx - nx, h: by - ny };
+          })
+          .filter((s) => s.w >= 8 && s.h >= 8);
+      }
+
       this.doc.clearSelection();
       this.doc.pushHistory(`Crop (${cw}×${ch})`);
     });
@@ -1491,8 +1791,8 @@ export class StudioSession {
       const leftLen = Math.hypot(corners[3].x - corners[0].x, corners[3].y - corners[0].y);
       const rightLen = Math.hypot(corners[2].x - corners[1].x, corners[2].y - corners[1].y);
 
-      const cw = Math.max(32, Math.round(outWidth || (topLen + botLen) / 2));
-      const ch = Math.max(32, Math.round(outHeight || (leftLen + rightLen) / 2));
+      const cw = Math.max(32, Math.min(4096, Math.round(outWidth || (topLen + botLen) / 2)));
+      const ch = Math.max(32, Math.min(4096, Math.round(outHeight || (leftLen + rightLen) / 2)));
 
       this.doc.width = cw;
       this.doc.height = ch;
@@ -1501,6 +1801,7 @@ export class StudioSession {
 
       for (const lyr of this.doc.layers) {
         if (lyr.kind === 'adjustment') continue;
+        this.doc.bakeSmartSource(lyr);
         if (lyr.kind === 'text' || lyr.kind === 'shape') {
           lyr.kind = 'raster';
           lyr.textData = null;
@@ -1511,6 +1812,8 @@ export class StudioSession {
           lyr.maskCanvas = Algorithms.perspectiveWarpCanvas(lyr.maskCanvas, corners, cw, ch);
         }
       }
+      this.doc.slices = [];
+      this.doc.selectedSliceId = null;
       this.doc.clearSelection();
       this.doc.pushHistory(`Perspective Crop (${cw}×${ch})`);
     });

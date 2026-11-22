@@ -70,6 +70,17 @@ export class BrushEngine {
 
     const healOffset = { dx: -Math.max(16, this.size * 1.2), dy: -Math.max(12, this.size * 0.8) };
 
+    let effectiveFg = fgColor;
+    if (editingMask) {
+      if (tool === 'eraser') {
+        effectiveFg = '#000000';
+      } else {
+        const [mr, mg, mb] = Algorithms.hexToRgb(fgColor || '#ffffff');
+        const lum = Math.max(0, Math.min(255, Math.round(0.299 * mr + 0.587 * mg + 0.114 * mb)));
+        effectiveFg = Algorithms.rgbToHex(lum, lum, lum);
+      }
+    }
+
     this.activeStroke = {
       tool,
       directMode,
@@ -83,7 +94,7 @@ export class BrushEngine {
       smoothX: x,
       smoothY: y,
       carryDist: 0,
-      fgColor: editingMask ? (tool === 'eraser' ? '#000000' : '#ffffff') : fgColor,
+      fgColor: effectiveFg,
       bgColor,
       editingMask,
       selectionCanvas,
@@ -330,10 +341,12 @@ export class BrushEngine {
     const sa = data[startIdx + 3];
 
     const [fr, fg, fb] = Algorithms.hexToRgb(fillHex);
-    const fa = Math.round((this.opacity / 100) * 255);
+    const srcAlpha = Math.max(0.01, Math.min(1, this.opacity / 100));
+    const fa = Math.round(srcAlpha * 255);
     const tol = this.bucketTolerance;
 
     if (
+      srcAlpha >= 0.99 &&
       Math.abs(sr - fr) <= 1 &&
       Math.abs(sg - fg) <= 1 &&
       Math.abs(sb - fb) <= 1 &&
@@ -351,10 +364,21 @@ export class BrushEngine {
       if (selectionMask && selectionMask[px] === 0) continue;
 
       const idx = px * 4;
-      data[idx] = fr;
-      data[idx + 1] = fg;
-      data[idx + 2] = fb;
-      data[idx + 3] = fa;
+      if (srcAlpha >= 0.99) {
+        data[idx] = fr;
+        data[idx + 1] = fg;
+        data[idx + 2] = fb;
+        data[idx + 3] = 255;
+      } else {
+        const dstA = data[idx + 3] / 255;
+        const outA = srcAlpha + dstA * (1 - srcAlpha);
+        if (outA > 0.001) {
+          data[idx] = Math.round((fr * srcAlpha + data[idx] * dstA * (1 - srcAlpha)) / outA);
+          data[idx + 1] = Math.round((fg * srcAlpha + data[idx + 1] * dstA * (1 - srcAlpha)) / outA);
+          data[idx + 2] = Math.round((fb * srcAlpha + data[idx + 2] * dstA * (1 - srcAlpha)) / outA);
+          data[idx + 3] = Math.round(outA * 255);
+        }
+      }
 
       const x = px % width;
       const y = (px / width) | 0;
