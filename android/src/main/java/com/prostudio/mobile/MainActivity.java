@@ -53,44 +53,19 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
 
         requestWindowFeature(Window.FEATURE_NO_TITLE);
-        Window window = getWindow();
+        final Window window = getWindow();
         if (window != null) {
-            window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
-            window.setStatusBarColor(Color.parseColor("#18191C"));
-            window.setNavigationBarColor(Color.parseColor("#18191C"));
-            if (Build.VERSION.SDK_INT >= 30) {
-                WindowInsetsController wic = window.getInsetsController();
-                if (wic != null) {
-                    wic.setSystemBarsAppearance(
-                            0,
-                            WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS |
-                                    WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-                    );
-                }
+            try {
+                window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+                window.setStatusBarColor(Color.parseColor("#18191C"));
+                window.setNavigationBarColor(Color.parseColor("#18191C"));
+            } catch (Throwable ignored) {
             }
         }
 
-        FrameLayout root = new FrameLayout(this);
+        final FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.parseColor("#18191C"));
-        root.setOnApplyWindowInsetsListener((v, insets) -> {
-            if (Build.VERSION.SDK_INT >= 30) {
-                Insets bars = insets.getInsets(
-                        WindowInsets.Type.systemBars() |
-                                WindowInsets.Type.displayCutout() |
-                                WindowInsets.Type.ime()
-                );
-                v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-                return WindowInsets.CONSUMED;
-            } else {
-                v.setPadding(
-                        insets.getSystemWindowInsetLeft(),
-                        insets.getSystemWindowInsetTop(),
-                        insets.getSystemWindowInsetRight(),
-                        insets.getSystemWindowInsetBottom()
-                );
-                return insets.consumeSystemWindowInsets();
-            }
-        });
+        root.setFitsSystemWindows(true);
 
         webView = new WebView(this);
         webView.setBackgroundColor(Color.parseColor("#18191C"));
@@ -170,8 +145,73 @@ public class MainActivity extends Activity {
                 FrameLayout.LayoutParams.MATCH_PARENT
         ));
         setContentView(root);
-        root.requestApplyInsets();
+
+        // Apply safe system bar / cutout / IME insets ONLY after setContentView()
+        try {
+            if (Build.VERSION.SDK_INT >= 30) {
+                Api30InsetsHelper.attach(root, window);
+            } else {
+                root.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+                    @Override
+                    public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                        try {
+                            v.setPadding(
+                                    insets.getSystemWindowInsetLeft(),
+                                    insets.getSystemWindowInsetTop(),
+                                    insets.getSystemWindowInsetRight(),
+                                    insets.getSystemWindowInsetBottom()
+                            );
+                            return insets.consumeSystemWindowInsets();
+                        } catch (Throwable ignored) {
+                            return insets;
+                        }
+                    }
+                });
+            }
+        } catch (Throwable ignored) {
+        }
+
         webView.loadUrl("file:///android_asset/www/index.html");
+    }
+
+    private static final class Api30InsetsHelper {
+        static void attach(final View root, final Window window) {
+            root.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+                @Override
+                public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                    try {
+                        Insets bars = insets.getInsets(
+                                WindowInsets.Type.systemBars()
+                                        | WindowInsets.Type.displayCutout()
+                                        | WindowInsets.Type.ime()
+                        );
+                        v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+                        return WindowInsets.CONSUMED;
+                    } catch (Throwable ignored) {
+                        return insets;
+                    }
+                }
+            });
+            root.post(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if (window != null) {
+                            WindowInsetsController wic = window.getInsetsController();
+                            if (wic != null) {
+                                wic.setSystemBarsAppearance(
+                                        0,
+                                        WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                                                | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                                );
+                            }
+                        }
+                        root.requestApplyInsets();
+                    } catch (Throwable ignored) {
+                    }
+                }
+            });
+        }
     }
 
     @Override
