@@ -1,0 +1,33 @@
+{
+  "name": "PhotoCraft Mobile",
+  "short_name": "PhotoCraft",
+  "description": "Mobile version of PhotoCraft — Open-source layered PSD & photo editor.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#262626",
+  "theme_color": "#262626",
+  "icons": [
+    {
+      "src": "assets/icons/icon-64.png",
+      "sizes": "64x64",
+      "type": "image/png"
+    },
+    {
+      "src": "assets/icons/icon-128.png",
+      "sizes": "128x128",
+      "type": "image/png"
+    },
+    {
+      "src": "assets/icons/icon-256.png",
+      "sizes": "256x256",
+      "type": "image/png"
+    },
+    {
+      "src": "assets/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

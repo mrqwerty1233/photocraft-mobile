@@ -1,0 +1,27 @@
+plugins {
+    id 'com.android.application' version '8.5.0'
+}
+
+android {
+    namespace 'ai.storyteller.photocraft.mobile'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "ai.storyteller.photocraft.mobile"
+        minSdk 26
+        targetSdk 35
+        versionCode 2301
+        versionName "0.23.1-mobile"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+}
