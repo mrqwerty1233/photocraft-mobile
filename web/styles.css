@@ -1742,15 +1742,17 @@ html, body {
   color: var(--pc-text-dim);
 }
 
-/* Toast Notification */
+/* Toast Notification (Bottom-center snackbar so it never covers Top Bar or Top Type Options Bar) */
 .toast-container {
   position: absolute;
-  top: 56px;
+  bottom: 132px;
   left: 50%;
   transform: translateX(-50%);
+  max-width: calc(100% - 24px);
   z-index: 95;
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 6px;
   pointer-events: none;
 }
@@ -1759,21 +1761,22 @@ html, body {
   background: rgba(24, 24, 27, 0.94);
   color: #ffffff;
   border: 1px solid rgba(255, 255, 255, 0.16);
-  padding: 7px 14px;
+  padding: 6px 13px;
   border-radius: 99px;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 500;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
+  text-align: center;
   animation: toast-in 0.18s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateY(-8px) scale(0.95);
+    transform: translateY(8px) scale(0.95);
   }
   to {
     opacity: 1;
@@ -3128,4 +3131,263 @@ html, body {
   accent-color: var(--pc-accent);
   margin: 0;
   flex-shrink: 0;
+}
+
+/* ============================================================================
+ * Photoshop-Exact Top Type Tool Options Bar & Direct On-Canvas Live Typing
+ * ============================================================================ */
+.top-type-bar {
+  order: 2;
+  background: #26272b;
+  border-bottom: 1px solid #3f424b;
+  padding: 5px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  z-index: 64;
+  flex-shrink: 0;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+.top-type-bar[hidden] {
+  display: none !important;
+}
+
+.ttb-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+
+.ttb-icon-btn {
+  height: 26px;
+  min-width: 24px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid #484b55;
+  background: #1d1e22;
+  color: #d6d9e0;
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.ttb-icon-btn:hover {
+  background: #32353e;
+  color: #ffffff;
+}
+
+.ttb-icon-btn.active {
+  background: rgba(38, 128, 235, 0.25);
+  border-color: #2680eb;
+  color: #60a5fa;
+}
+
+.ttb-icon-btn.commit {
+  background: #1473e6;
+  border-color: #2b86f6;
+  color: #ffffff;
+  min-width: 28px;
+  padding: 0 7px;
+  font-size: 12px;
+}
+
+.ttb-icon-btn.cancel {
+  background: rgba(239, 68, 68, 0.16);
+  border-color: rgba(239, 68, 68, 0.45);
+  color: #fca5a5;
+  min-width: 26px;
+  padding: 0 6px;
+}
+
+.ttb-select {
+  height: 26px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid #484b55;
+  background: #1d1e22;
+  color: #f3f4f6;
+  font-size: 11px;
+  min-width: 0;
+}
+
+.ttb-aa-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: #1d1e22;
+  border: 1px solid #484b55;
+  border-radius: 4px;
+  padding: 0 3px 0 5px;
+  height: 26px;
+  flex-shrink: 0;
+}
+
+.ttb-aa-wrap span {
+  font-size: 10px;
+  font-weight: 700;
+  color: #9ca3af;
+  letter-spacing: -0.02em;
+}
+
+.ttb-aa-select {
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: #f3f4f6;
+  font-size: 10.5px;
+  padding: 0 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.ttb-size-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: #1d1e22;
+  border: 1px solid #484b55;
+  border-radius: 4px;
+  padding: 0 4px;
+  height: 26px;
+  flex-shrink: 0;
+}
+
+.ttb-size-wrap span {
+  font-size: 10.5px;
+  color: #9ca3af;
+  font-weight: 700;
+}
+
+.ttb-size-input {
+  width: 38px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: #f3f4f6;
+  font-size: 11px;
+  font-family: var(--pc-font-mono);
+  text-align: right;
+  outline: none;
+}
+
+.ttb-size-preset {
+  width: 16px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.ttb-align-group {
+  display: inline-flex;
+  border: 1px solid #484b55;
+  border-radius: 4px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.ttb-align-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-right: 1px solid #3c3f49;
+  background: #1d1e22;
+  color: #b4b8c2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.ttb-align-btn:last-child {
+  border-right: none;
+}
+
+.ttb-align-btn.active {
+  background: #2680eb;
+  color: #ffffff;
+}
+
+.ttb-swatch {
+  width: 24px;
+  height: 26px;
+  padding: 1px;
+  border-radius: 4px;
+  border: 1px solid #5c606d;
+  background: #1d1e22;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* Direct On-Canvas Live Text Editor (Matches Photoshop In-Place Typing & Blue Selection!) */
+.canvas-workspace.tool-cursor-text canvas {
+  cursor: text;
+}
+
+.inline-text-editor-wrap {
+  position: absolute;
+  z-index: 42;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.inline-text-editor-wrap[hidden] {
+  display: none !important;
+}
+
+.inline-text-drag-bar {
+  position: absolute;
+  top: -22px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: rgba(20, 115, 230, 0.92);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45);
+}
+
+.inline-text-drag-bar:active {
+  cursor: grabbing;
+}
+
+.inline-text-input {
+  background: transparent;
+  border: 1.5px dashed rgba(56, 189, 248, 0.85);
+  border-radius: 2px;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  padding: 2px 6px;
+  margin: 0;
+  min-width: 60px;
+  white-space: pre;
+  caret-color: #38bdf8;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+/* Iconic Photoshop dark-blue text selection highlight (matches user's Photoshop photo!) */
+.inline-text-input::selection {
+  background: #1d3582;
+  color: #ffffff;
 }

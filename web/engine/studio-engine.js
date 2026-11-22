@@ -289,7 +289,7 @@ export class StudioDoc {
    * Render a single layer (including its mask and Layer Styles fx) to a 2D context.
    */
   renderSingleLayerToContext(layer, destCtx, applyPreview = false) {
-    if (!layer || !layer.visible || layer.kind === 'adjustment') return;
+    if (!layer || !layer.visible || layer.kind === 'adjustment' || layer._inlineEditing) return;
 
     let srcCanvas = layer.canvas;
 

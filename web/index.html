@@ -95,10 +95,29 @@
         </div>
       </header>
 
+      <!-- Photoshop-Style Top Type Options Bar (Shown at the top when Type Tool is active!) -->
+      <div class="top-type-bar" id="top-type-bar" hidden aria-label="Type Tool Settings"></div>
+
       <!-- Interactive Multi-Touch Canvas Workspace -->
       <section class="canvas-workspace" id="canvas-workspace">
         <div class="canvas-stage-wrapper" id="canvas-stage-wrapper">
           <canvas id="viewport-canvas"></canvas>
+        </div>
+
+        <!-- Direct On-Canvas Photoshop Live Text Editor (Click canvas and start typing!) -->
+        <div class="inline-text-editor-wrap" id="inline-text-editor-wrap" hidden>
+          <div class="inline-text-drag-bar" id="inline-text-drag-bar" title="Drag to reposition text">
+            <span>✥ Move</span>
+          </div>
+          <textarea
+            id="inline-text-input"
+            class="inline-text-input"
+            rows="1"
+            spellcheck="false"
+            autocomplete="off"
+            autocorrect="off"
+            aria-label="Live Canvas Text Input"
+          ></textarea>
         </div>
 
         <!-- Top Floating Canvas HUD -->

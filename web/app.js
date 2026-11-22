@@ -168,9 +168,26 @@ class ProStudioMobileApp {
     this.exportLocation = localStorage.getItem('ps_export_location') || 'downloads';
     this.exportSubfolder = localStorage.getItem('ps_export_subfolder') || 'ProStudio';
 
-    // Imported Custom Fonts Registry
+    // Imported Custom Fonts Registry & Photoshop Top Type Bar Settings
     this.importedFonts = [];
-    this.activeFontFamily = BUILTIN_FONTS[0].family;
+    this.activeFontFamily = 'Impact, sans-serif';
+    this.typeSettings = {
+      fontFamily: 'Impact, sans-serif',
+      fontWeight: '400',
+      italic: false,
+      fontSize: 72,
+      antiAlias: 'sharp',
+      align: 'center',
+      color: '#111827',
+      orientation: 'horizontal',
+      tracking: 0,
+      lineHeight: 1.2,
+      warp: 'none',
+      warpBend: 35,
+      strokeWidth: 0,
+      strokeColor: '#000000'
+    };
+    this.inlineTextSession = null;
 
     // Active Colors
     this.fgColor = '#378ef0';
@@ -248,6 +265,7 @@ class ProStudioMobileApp {
     this.newDocScreen = new PhotoshopNewDocumentScreen(this);
 
     this.initDOM();
+    this.initInlineTextEditor();
     this.initRightLayersDrawer();
     this.initToolbarFreeFloatDrag();
     this.initPinnedToolButtons();
@@ -976,20 +994,34 @@ class ProStudioMobileApp {
       });
     });
 
-    // 4. Type & Font Group Flyout
+    // 4. Type & Font Group Flyout (Direct Click-and-Type — Zero Popup Modal!)
     document.getElementById('tool-group-text').addEventListener('click', (e) => {
       e.stopPropagation();
+      if (this.activeTool !== 'text') {
+        this.closeAllDropdowns();
+        this.selectTool('text');
+        this.showToast('Type Tool active — tap anywhere on canvas to start typing');
+        return;
+      }
       this.toggleDropdown('flyout-text', (menu) => {
         menu.innerHTML = `<div class="dropdown-section-label">Type &amp; Custom Fonts</div>`;
-        this.addDropdownMenuItem(menu, 'T Horizontal Type Tool', 'T', this.activeTool === 'text', () => {
+        this.addDropdownMenuItem(menu, 'T Horizontal Type Tool', 'T', this.activeTool === 'text' && this.typeSettings.orientation !== 'vertical', () => {
+          this.typeSettings.orientation = 'horizontal';
+          if (this.inlineTextSession?.layer?.textData) {
+            this.inlineTextSession.layer.textData.orientation = 'horizontal';
+            this.syncInlineTextOverlay();
+          }
           this.selectTool('text');
-          this.openTextEditorModal(this.session.doc?.activeLayer?.kind === 'text' ? this.session.doc.activeLayer : null);
+          this.showToast('Horizontal Type Tool — tap canvas to type');
         });
-        this.addDropdownMenuItem(menu, '縦 Vertical Type Tool', 'T', false, () => {
+        this.addDropdownMenuItem(menu, '縦 Vertical Type Tool', 'T', this.activeTool === 'text' && this.typeSettings.orientation === 'vertical', () => {
+          this.typeSettings.orientation = 'vertical';
+          if (this.inlineTextSession?.layer?.textData) {
+            this.inlineTextSession.layer.textData.orientation = 'vertical';
+            this.syncInlineTextOverlay();
+          }
           this.selectTool('text');
-          const lyr = this.session.doc?.activeLayer?.kind === 'text' ? this.session.doc.activeLayer : null;
-          if (lyr && lyr.textData) lyr.textData.orientation = 'vertical';
-          this.openTextEditorModal(lyr);
+          this.showToast('Vertical Type Tool — tap canvas to type');
         });
         this.addDropdownMenuItem(menu, '🔤 Import Downloaded Font...', '.ttf/.otf', false, () => {
           document.getElementById('file-input-font').click();
@@ -1087,27 +1119,22 @@ class ProStudioMobileApp {
 
     if (lastLoadedFamily) {
       this.activeFontFamily = lastLoadedFamily;
-      const active = this.session.doc?.activeLayer;
-      if (active && active.kind === 'text' && active.textData) {
-        active.textData.fontFamily = lastLoadedFamily;
-        this.session.doc.rasterizeTextLayer(active);
-        this.session.doc.pushHistory(`Apply Font (${lastLoadedFamily})`);
-        this.session.notify('text.fontImported');
-      }
-      this.renderToolOptionsStrip();
-      const modalFontSel = document.getElementById('modal-type-font-select');
-      if (modalFontSel) {
-        modalFontSel.innerHTML = '';
-        for (const f of this.allFonts) {
-          const opt = document.createElement('option');
-          opt.value = f.family;
-          opt.textContent = f.label;
-          if (f.family === lastLoadedFamily) opt.selected = true;
-          modalFontSel.appendChild(opt);
+      this.typeSettings.fontFamily = lastLoadedFamily;
+      if (this.inlineTextSession?.layer?.textData) {
+        this.inlineTextSession.layer.textData.fontFamily = lastLoadedFamily;
+        this.syncInlineTextOverlay();
+      } else {
+        const active = this.session.doc?.activeLayer;
+        if (active && active.kind === 'text' && active.textData) {
+          active.textData.fontFamily = lastLoadedFamily;
+          this.session.doc.rasterizeTextLayer(active);
+          this.session.doc.pushHistory(`Apply Font (${lastLoadedFamily})`);
+          this.session.notify('text.fontImported');
         }
-        modalFontSel.dispatchEvent(new Event('change'));
       }
-      this.showToast('Imported Font! Ready in Type Tool');
+      this.renderTopTypeBar();
+      this.renderToolOptionsStrip();
+      this.showToast('Imported Font! Applied in Top Type Bar');
     }
   }
 
@@ -1129,10 +1156,16 @@ class ProStudioMobileApp {
   }
 
   loadDocument(doc) {
+    if (this.inlineTextSession) {
+      this.inlineTextSession = null;
+      const wrap = document.getElementById('inline-text-editor-wrap');
+      if (wrap) wrap.hidden = true;
+    }
     this.session.doc = doc;
     this.resetCropBoxes(doc);
     this.resizeViewportCanvas();
     this.fitCanvasToViewport();
+    this.renderTopTypeBar();
     this.session.notify('document.loaded');
   }
 
@@ -1226,14 +1259,21 @@ class ProStudioMobileApp {
   }
 
   selectTool(toolId) {
+    // Commit any active live on-canvas text editing when switching away from Type Tool (Photoshop UX!)
+    if (this.inlineTextSession && toolId !== 'text') {
+      this.commitInlineTextEdit();
+    }
+
     this.activeTool = toolId;
     const mapping = TOOL_TO_GROUP[toolId] || { group: 'paint', label: 'Brush' };
 
     document.querySelectorAll('#tools-belt .tool-item-btn').forEach((btn) => {
-      btn.classList.toggle('active', btn.dataset.group === mapping.group);
+      btn.classList.toggle('active', btn.dataset.group === mapping.group || btn.dataset.pinTool === toolId);
     });
     const lblEl = document.getElementById(`lbl-group-${mapping.group}`);
     if (lblEl) lblEl.textContent = mapping.label;
+
+    this.workspaceEl?.classList.toggle('tool-cursor-text', toolId === 'text');
 
     const doc = this.session.doc;
     if (doc) {
@@ -1262,9 +1302,655 @@ class ProStudioMobileApp {
       }
     }
     this.hapticTick();
+    this.renderTopTypeBar();
     this.renderToolOptionsStrip();
     this.renderFloatingContextBar();
     this.requestRender();
+  }
+
+  /* ==========================================================================
+   * Photoshop-Exact Top Type Options Bar & Direct On-Canvas Click-and-Type!
+   * ========================================================================== */
+  initInlineTextEditor() {
+    const wrap = document.getElementById('inline-text-editor-wrap');
+    const input = document.getElementById('inline-text-input');
+    const dragBar = document.getElementById('inline-text-drag-bar');
+    if (!wrap || !input || !dragBar) return;
+
+    // Live typing updates layer textData and auto-sizes the on-canvas text box!
+    input.addEventListener('input', () => {
+      if (!this.inlineTextSession) return;
+      const lyr = this.inlineTextSession.layer;
+      lyr.textData.text = input.value;
+      const firstLine = input.value.split('\n')[0]?.trim();
+      lyr.name = firstLine ? firstLine.slice(0, 26) : 'Type Layer';
+      this.syncInlineTextOverlay();
+      this.syncHeaderAndHUD();
+      if (this.rightLayersOpen) this.renderRightLayersDrawer();
+    });
+
+    // Keyboard shortcuts while typing (Ctrl/Cmd+Enter = Commit, Esc = Cancel; never hijack keys!)
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        this.cancelInlineTextEdit();
+      } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        this.commitInlineTextEdit();
+      }
+    });
+
+    input.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+    });
+
+    // Drag the blue "✥ Move" bar above live text to reposition while typing!
+    let dragging = false;
+    let sx = 0, sy = 0, ox = 0, oy = 0;
+    dragBar.addEventListener('pointerdown', (e) => {
+      if (!this.inlineTextSession) return;
+      e.preventDefault();
+      e.stopPropagation();
+      dragging = true;
+      sx = e.clientX;
+      sy = e.clientY;
+      ox = this.inlineTextSession.layer.textData.x ?? 0;
+      oy = this.inlineTextSession.layer.textData.y ?? 0;
+      dragBar.setPointerCapture(e.pointerId);
+    });
+    dragBar.addEventListener('pointermove', (e) => {
+      if (!dragging || !this.inlineTextSession) return;
+      const td = this.inlineTextSession.layer.textData;
+      td.x = Math.round(ox + (e.clientX - sx) / this.zoom);
+      td.y = Math.round(oy + (e.clientY - sy) / this.zoom);
+      this.syncInlineTextOverlayPosition();
+    });
+    const endDrag = () => {
+      dragging = false;
+      if (this.inlineTextSession) input.focus();
+    };
+    dragBar.addEventListener('pointerup', endDrag);
+    dragBar.addEventListener('pointercancel', endDrag);
+  }
+
+  /**
+   * Hit-test existing visible text layers from top to bottom so tapping existing text
+   * edits it right in place on canvas (just like real Photoshop!).
+   */
+  hitTestTextLayer(docX, docY) {
+    const doc = this.session.doc;
+    if (!doc) return null;
+    const measureCtx = document.createElement('canvas').getContext('2d');
+
+    for (let i = doc.layers.length - 1; i >= 0; i--) {
+      const lyr = doc.layers[i];
+      if (!lyr.visible || lyr.kind !== 'text' || !lyr.textData) continue;
+      const td = lyr.textData;
+      const size = td.fontSize || 48;
+      const style = td.italic ? 'italic' : 'normal';
+      const weight = td.fontWeight || '600';
+      measureCtx.font = `${style} ${weight} ${size}px ${td.fontFamily || 'Inter, sans-serif'}`;
+
+      const lines = String(td.text || ' ').split('\n');
+      const lh = size * (td.lineHeight || 1.25);
+      const bx = td.x ?? doc.width / 2;
+      const by = td.y ?? doc.height / 2;
+
+      let w = 0;
+      let h = 0;
+      if (td.orientation === 'vertical') {
+        w = Math.max(size, lines.length * size * (td.lineHeight || 1.3));
+        const maxChars = Math.max(1, ...lines.map((l) => Array.from(l).length));
+        h = maxChars * (size + (td.tracking || 0));
+      } else {
+        for (const line of lines) {
+          const mw = measureCtx.measureText(line).width + Math.max(0, line.length - 1) * (td.tracking || 0);
+          if (mw > w) w = mw;
+        }
+        w = Math.max(size * 1.5, w);
+        h = Math.max(size, lines.length * lh);
+      }
+
+      const pad = Math.max(18, 22 / this.zoom);
+      const align = td.align || 'center';
+      let x0 = bx - w / 2 - pad;
+      if (td.orientation !== 'vertical') {
+        if (align === 'left') x0 = bx - pad;
+        else if (align === 'right') x0 = bx - w - pad;
+      }
+      const x1 = x0 + w + pad * 2;
+      const y0 = by - h / 2 - pad;
+      const y1 = by + h / 2 + pad;
+
+      if (docX >= x0 && docX <= x1 && docY >= y0 && docY <= y1) {
+        return lyr;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Begin live direct on-canvas typing on either a newly clicked position or an existing text layer.
+   */
+  startInlineTextEdit(layer, isNew = false) {
+    const doc = this.session.doc;
+    if (!doc || !layer || !layer.textData) return;
+
+    // Commit any previous text edit session first
+    if (this.inlineTextSession && this.inlineTextSession.layer !== layer) {
+      this.commitInlineTextEdit();
+    }
+
+    doc.activeLayerId = layer.id;
+    doc.editingMask = false;
+
+    const td = layer.textData;
+    // Sync Top Type Bar settings to this layer's textData
+    this.typeSettings = {
+      ...this.typeSettings,
+      fontFamily: td.fontFamily || this.typeSettings.fontFamily,
+      fontWeight: String(td.fontWeight || '700'),
+      italic: Boolean(td.italic),
+      fontSize: td.fontSize || 64,
+      antiAlias: td.antiAlias || 'sharp',
+      align: td.align || 'center',
+      color: td.color || '#111827',
+      orientation: td.orientation || 'horizontal',
+      tracking: td.tracking || 0,
+      lineHeight: td.lineHeight || 1.25,
+      warp: td.warp || 'none',
+      warpBend: td.warpBend ?? 35,
+      strokeWidth: td.strokeWidth || 0,
+      strokeColor: td.strokeColor || '#000000'
+    };
+    this.activeFontFamily = this.typeSettings.fontFamily;
+
+    this.inlineTextSession = {
+      layer,
+      isNew,
+      originalTextData: structuredClone(td),
+      originalName: layer.name
+    };
+
+    layer._inlineEditing = true;
+    doc.compose();
+    this.requestRender();
+
+    const wrap = document.getElementById('inline-text-editor-wrap');
+    const input = document.getElementById('inline-text-input');
+    input.value = td.text || '';
+    wrap.hidden = false;
+
+    this.syncInlineTextOverlay();
+    this.renderTopTypeBar();
+    this.syncHeaderAndHUD();
+    if (this.rightLayersOpen) this.renderRightLayersDrawer();
+
+    // Focus immediately and pre-select "Lorem Ipsum" for new layers (EXACT Photoshop behavior!)
+    requestAnimationFrame(() => {
+      input.focus();
+      if (isNew) {
+        input.select();
+      } else {
+        input.setSelectionRange(input.value.length, input.value.length);
+      }
+    });
+  }
+
+  syncInlineTextOverlay() {
+    if (!this.inlineTextSession) return;
+    const td = this.inlineTextSession.layer.textData;
+    const wrap = document.getElementById('inline-text-editor-wrap');
+    const input = document.getElementById('inline-text-input');
+    if (!wrap || !input) return;
+
+    const zoom = Math.max(0.1, this.zoom);
+    const screenFontSize = Math.max(10, (td.fontSize || 64) * zoom);
+    const lh = td.lineHeight || 1.25;
+    const trackingPx = (td.tracking || 0) * zoom;
+
+    input.style.fontFamily = td.fontFamily || 'Impact, sans-serif';
+    input.style.fontWeight = String(td.fontWeight || '400');
+    input.style.fontStyle = td.italic ? 'italic' : 'normal';
+    input.style.fontSize = `${screenFontSize}px`;
+    input.style.lineHeight = `${lh}`;
+    input.style.letterSpacing = `${trackingPx}px`;
+    input.style.color = td.color || '#111827';
+    input.style.textAlign = td.orientation === 'vertical' ? 'center' : (td.align || 'center');
+    input.style.writingMode = td.orientation === 'vertical' ? 'vertical-rl' : 'horizontal-tb';
+    if (td.strokeWidth && td.strokeWidth > 0) {
+      input.style.webkitTextStroke = `${Math.max(0.5, td.strokeWidth * zoom * 0.5)}px ${td.strokeColor || '#000000'}`;
+    } else {
+      input.style.webkitTextStroke = '';
+    }
+
+    // Measure exact live text dimensions so textarea expands cleanly without clipping
+    const mCanvas = this._textMeasureCanvas || (this._textMeasureCanvas = document.createElement('canvas'));
+    const mCtx = mCanvas.getContext('2d');
+    mCtx.font = `${td.italic ? 'italic' : 'normal'} ${td.fontWeight || '400'} ${screenFontSize}px ${td.fontFamily || 'Impact, sans-serif'}`;
+    const lines = String(input.value || ' ').split('\n');
+
+    if (td.orientation === 'vertical') {
+      const maxChars = Math.max(2, ...lines.map((l) => Array.from(l).length));
+      input.style.width = `${Math.max(screenFontSize * 1.6, lines.length * screenFontSize * lh + 22)}px`;
+      input.style.height = `${Math.max(screenFontSize * 2.5, maxChars * (screenFontSize + trackingPx) + 28)}px`;
+    } else {
+      let maxW = screenFontSize * 2;
+      for (const line of lines) {
+        const w = mCtx.measureText(line || 'M').width + Math.max(0, line.length - 1) * trackingPx;
+        if (w > maxW) maxW = w;
+      }
+      input.rows = Math.max(1, lines.length);
+      input.style.width = `${Math.ceil(maxW + 26)}px`;
+      input.style.height = `${Math.ceil(lines.length * screenFontSize * lh + 12)}px`;
+    }
+
+    this.syncInlineTextOverlayPosition();
+  }
+
+  syncInlineTextOverlayPosition() {
+    if (!this.inlineTextSession) return;
+    const td = this.inlineTextSession.layer.textData;
+    const wrap = document.getElementById('inline-text-editor-wrap');
+    if (!wrap) return;
+
+    const sx = this.panX + (td.x ?? 0) * this.zoom;
+    const sy = this.panY + (td.y ?? 0) * this.zoom;
+    wrap.style.left = `${sx}px`;
+    wrap.style.top = `${sy}px`;
+
+    const align = td.orientation === 'vertical' ? 'center' : (td.align || 'center');
+    const tx = align === 'left' ? '0%' : align === 'right' ? '-100%' : '-50%';
+    wrap.style.transform = `translate(${tx}, -50%)`;
+  }
+
+  commitInlineTextEdit() {
+    if (!this.inlineTextSession) return;
+    const doc = this.session.doc;
+    const { layer, isNew } = this.inlineTextSession;
+    const input = document.getElementById('inline-text-input');
+    const wrap = document.getElementById('inline-text-editor-wrap');
+
+    const finalText = input ? input.value : layer.textData.text;
+    layer._inlineEditing = false;
+    this.inlineTextSession = null;
+    if (wrap) wrap.hidden = true;
+
+    if (!doc) return;
+    if (!finalText.trim()) {
+      // Remove empty new layer automatically (exact Photoshop behavior!)
+      if (isNew) {
+        const idx = doc.layers.findIndex((l) => l.id === layer.id);
+        if (idx >= 0) doc.layers.splice(idx, 1);
+        doc.activeLayerId = doc.layers[doc.layers.length - 1]?.id || null;
+      } else {
+        layer.textData.text = ' ';
+        doc.rasterizeTextLayer(layer);
+      }
+    } else {
+      layer.textData.text = finalText;
+      layer.name = finalText.split('\n')[0].trim().slice(0, 26) || 'Type Layer';
+      doc.rasterizeTextLayer(layer);
+      doc.pushHistory(isNew ? `Type: ${layer.name}` : `Edit Type: ${layer.name}`);
+    }
+
+    this.renderTopTypeBar();
+    this.session.notify('text.commit');
+  }
+
+  cancelInlineTextEdit() {
+    if (!this.inlineTextSession) return;
+    const doc = this.session.doc;
+    const { layer, isNew, originalTextData, originalName } = this.inlineTextSession;
+    const wrap = document.getElementById('inline-text-editor-wrap');
+
+    layer._inlineEditing = false;
+    this.inlineTextSession = null;
+    if (wrap) wrap.hidden = true;
+
+    if (doc) {
+      if (isNew) {
+        const idx = doc.layers.findIndex((l) => l.id === layer.id);
+        if (idx >= 0) doc.layers.splice(idx, 1);
+        doc.activeLayerId = doc.layers[doc.layers.length - 1]?.id || null;
+      } else {
+        layer.textData = originalTextData;
+        layer.name = originalName;
+        doc.rasterizeTextLayer(layer);
+      }
+      this.session.notify('text.cancel');
+    }
+    this.renderTopTypeBar();
+  }
+
+  /**
+   * Photoshop-Style Top Type Options Bar (Font, Style, Size, Anti-Alias, Alignment, Color, Warp, +Font, Cancel/Commit)
+   */
+  renderTopTypeBar() {
+    const bar = document.getElementById('top-type-bar');
+    if (!bar) return;
+
+    const shouldShow = this.activeTool === 'text' || Boolean(this.inlineTextSession);
+    bar.hidden = !shouldShow;
+    if (!shouldShow) return;
+
+    // Sync from active text layer if not currently inline-editing
+    if (!this.inlineTextSession && this.session.doc?.activeLayer?.kind === 'text' && this.session.doc.activeLayer.textData) {
+      const atd = this.session.doc.activeLayer.textData;
+      this.typeSettings.fontFamily = atd.fontFamily || this.typeSettings.fontFamily;
+      this.typeSettings.fontWeight = String(atd.fontWeight || '400');
+      this.typeSettings.italic = Boolean(atd.italic);
+      this.typeSettings.fontSize = atd.fontSize || 72;
+      this.typeSettings.align = atd.align || 'center';
+      this.typeSettings.color = atd.color || '#111827';
+      this.typeSettings.orientation = atd.orientation || 'horizontal';
+      this.typeSettings.tracking = atd.tracking || 0;
+      this.typeSettings.lineHeight = atd.lineHeight || 1.25;
+      this.typeSettings.warp = atd.warp || 'none';
+      this.typeSettings.warpBend = atd.warpBend ?? 35;
+      this.typeSettings.strokeWidth = atd.strokeWidth || 0;
+      this.typeSettings.strokeColor = atd.strokeColor || '#000000';
+    }
+
+    const ts = this.typeSettings;
+    const applyLiveTypeChange = (mutator) => {
+      mutator(ts);
+      this.activeFontFamily = ts.fontFamily;
+      if (this.inlineTextSession?.layer?.textData) {
+        Object.assign(this.inlineTextSession.layer.textData, {
+          fontFamily: ts.fontFamily,
+          fontWeight: ts.fontWeight,
+          italic: ts.italic,
+          fontSize: ts.fontSize,
+          antiAlias: ts.antiAlias,
+          align: ts.align,
+          color: ts.color,
+          orientation: ts.orientation,
+          tracking: ts.tracking,
+          lineHeight: ts.lineHeight,
+          warp: ts.warp,
+          warpBend: ts.warpBend,
+          strokeWidth: ts.strokeWidth,
+          strokeColor: ts.strokeColor
+        });
+        this.syncInlineTextOverlay();
+      } else {
+        const active = this.session.doc?.activeLayer;
+        if (active && active.kind === 'text' && active.textData) {
+          Object.assign(active.textData, {
+            fontFamily: ts.fontFamily,
+            fontWeight: ts.fontWeight,
+            italic: ts.italic,
+            fontSize: ts.fontSize,
+            antiAlias: ts.antiAlias,
+            align: ts.align,
+            color: ts.color,
+            orientation: ts.orientation,
+            tracking: ts.tracking,
+            lineHeight: ts.lineHeight,
+            warp: ts.warp,
+            warpBend: ts.warpBend,
+            strokeWidth: ts.strokeWidth,
+            strokeColor: ts.strokeColor
+          });
+          this.session.doc.rasterizeTextLayer(active);
+          this.session.notify('text.styleChange');
+        }
+      }
+    };
+
+    const currentStyleId = ts.italic
+      ? (Number(ts.fontWeight) >= 700 ? 'boldItalic' : 'italic')
+      : Number(ts.fontWeight) >= 900
+      ? 'black'
+      : Number(ts.fontWeight) >= 700
+      ? 'bold'
+      : Number(ts.fontWeight) >= 500
+      ? 'medium'
+      : 'regular';
+
+    bar.innerHTML = '';
+
+    // ROW 1: Orientation, Font Family, Style, Size (tT), Anti-Alias (aa) — EXACT Photoshop Order!
+    const row1 = document.createElement('div');
+    row1.className = 'ttb-row';
+
+    const oriBtn = document.createElement('button');
+    oriBtn.type = 'button';
+    oriBtn.className = `ttb-icon-btn${ts.orientation === 'vertical' ? ' active' : ''}`;
+    oriBtn.title = 'Toggle Text Orientation (Horizontal / Vertical)';
+    oriBtn.textContent = ts.orientation === 'vertical' ? 'T↕' : 'T⇄';
+    oriBtn.addEventListener('click', () => {
+      applyLiveTypeChange((s) => { s.orientation = s.orientation === 'vertical' ? 'horizontal' : 'vertical'; });
+      this.renderTopTypeBar();
+    });
+    row1.appendChild(oriBtn);
+
+    const fontSel = document.createElement('select');
+    fontSel.className = 'ttb-select';
+    fontSel.id = 'ttb-font-select';
+    fontSel.title = 'Font Family';
+    fontSel.style.flex = '1.4';
+    for (const f of this.allFonts) {
+      const o = document.createElement('option');
+      o.value = f.family;
+      o.textContent = f.label;
+      if (f.family === ts.fontFamily) o.selected = true;
+      fontSel.appendChild(o);
+    }
+    fontSel.addEventListener('change', () => applyLiveTypeChange((s) => { s.fontFamily = fontSel.value; }));
+    row1.appendChild(fontSel);
+
+    const styleSel = document.createElement('select');
+    styleSel.className = 'ttb-select';
+    styleSel.id = 'ttb-style-select';
+    styleSel.title = 'Font Style';
+    styleSel.style.width = '78px';
+    for (const st of [
+      { id: 'regular', label: 'Regular', w: '400', it: false },
+      { id: 'medium', label: 'Medium', w: '500', it: false },
+      { id: 'bold', label: 'Bold', w: '700', it: false },
+      { id: 'black', label: 'Black', w: '900', it: false },
+      { id: 'italic', label: 'Italic', w: '400', it: true },
+      { id: 'boldItalic', label: 'Bold Italic', w: '700', it: true }
+    ]) {
+      const o = document.createElement('option');
+      o.value = st.id;
+      o.textContent = st.label;
+      if (st.id === currentStyleId) o.selected = true;
+      styleSel.appendChild(o);
+    }
+    styleSel.addEventListener('change', () => {
+      const map = {
+        regular: ['400', false],
+        medium: ['500', false],
+        bold: ['700', false],
+        black: ['900', false],
+        italic: ['400', true],
+        boldItalic: ['700', true]
+      };
+      const [w, it] = map[styleSel.value] || ['400', false];
+      applyLiveTypeChange((s) => { s.fontWeight = w; s.italic = it; });
+    });
+    row1.appendChild(styleSel);
+
+    // tT Font Size Input + Quick Preset Dropdown
+    const sizeWrap = document.createElement('div');
+    sizeWrap.className = 'ttb-size-wrap';
+    sizeWrap.title = 'Font Size (px)';
+    sizeWrap.innerHTML = `
+      <span>tT</span>
+      <input type="number" class="ttb-size-input" id="ttb-size-input" min="8" max="400" value="${Math.round(ts.fontSize || 72)}" />
+      <select class="ttb-size-preset" id="ttb-size-preset" title="Preset Sizes">
+        <option value="">▾</option>
+        ${[18, 24, 36, 48, 64, 72, 96, 128, 160, 220].map((v) => `<option value="${v}">${v} px</option>`).join('')}
+      </select>
+    `;
+    const sizeIn = sizeWrap.querySelector('#ttb-size-input');
+    const sizePre = sizeWrap.querySelector('#ttb-size-preset');
+    sizeIn.addEventListener('input', () => {
+      const v = Math.max(8, Math.min(400, Number(sizeIn.value) || 12));
+      applyLiveTypeChange((s) => { s.fontSize = v; });
+    });
+    sizePre.addEventListener('change', () => {
+      if (!sizePre.value) return;
+      const v = Number(sizePre.value);
+      sizeIn.value = String(v);
+      sizePre.value = '';
+      applyLiveTypeChange((s) => { s.fontSize = v; });
+    });
+    row1.appendChild(sizeWrap);
+
+    bar.appendChild(row1);
+
+    // ROW 2: Anti-Alias (aa [Sharp]), Alignment (L/C/R), Color Swatch, +Font, Warp Popover, Cancel (✕), Commit (✓)
+    const row2 = document.createElement('div');
+    row2.className = 'ttb-row';
+
+    const aaWrap = document.createElement('div');
+    aaWrap.className = 'ttb-aa-wrap';
+    aaWrap.title = 'Anti-Aliasing Method';
+    const aaLbl = document.createElement('span');
+    aaLbl.textContent = 'aa';
+    const aaSel = document.createElement('select');
+    aaSel.className = 'ttb-aa-select';
+    aaSel.id = 'ttb-aa-select';
+    for (const aa of ['Sharp', 'Crisp', 'Strong', 'Smooth', 'None']) {
+      const o = document.createElement('option');
+      o.value = aa.toLowerCase();
+      o.textContent = aa;
+      if ((ts.antiAlias || 'sharp') === o.value) o.selected = true;
+      aaSel.appendChild(o);
+    }
+    aaSel.addEventListener('change', () => applyLiveTypeChange((s) => { s.antiAlias = aaSel.value; }));
+    aaWrap.appendChild(aaLbl);
+    aaWrap.appendChild(aaSel);
+    row2.appendChild(aaWrap);
+
+    // Alignment Buttons (Left / Center / Right)
+    const alignGrp = document.createElement('div');
+    alignGrp.className = 'ttb-align-group';
+    const alignIcons = {
+      left: '<svg viewBox="0 0 16 16" width="13" height="13" stroke="currentColor" stroke-width="1.6"><line x1="2" y1="3" x2="14" y2="3"/><line x1="2" y1="7" x2="10" y2="7"/><line x1="2" y1="11" x2="13" y2="11"/></svg>',
+      center: '<svg viewBox="0 0 16 16" width="13" height="13" stroke="currentColor" stroke-width="1.6"><line x1="2" y1="3" x2="14" y2="3"/><line x1="4" y1="7" x2="12" y2="7"/><line x1="3" y1="11" x2="13" y2="11"/></svg>',
+      right: '<svg viewBox="0 0 16 16" width="13" height="13" stroke="currentColor" stroke-width="1.6"><line x1="2" y1="3" x2="14" y2="3"/><line x1="6" y1="7" x2="14" y2="7"/><line x1="3" y1="11" x2="14" y2="11"/></svg>'
+    };
+    for (const al of ['left', 'center', 'right']) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `ttb-align-btn${ts.align === al ? ' active' : ''}`;
+      b.title = `Align ${al}`;
+      b.innerHTML = alignIcons[al];
+      b.addEventListener('click', () => {
+        applyLiveTypeChange((s) => { s.align = al; });
+        this.renderTopTypeBar();
+      });
+      alignGrp.appendChild(b);
+    }
+    row2.appendChild(alignGrp);
+
+    // Color Swatch
+    const colIn = document.createElement('input');
+    colIn.type = 'color';
+    colIn.className = 'ttb-swatch';
+    colIn.id = 'ttb-color-input';
+    colIn.value = ts.color || '#111827';
+    colIn.title = 'Text Color';
+    colIn.addEventListener('input', () => applyLiveTypeChange((s) => { s.color = colIn.value; }));
+    row2.appendChild(colIn);
+
+    // Import Downloaded Font Button (+Font)
+    const impBtn = document.createElement('button');
+    impBtn.type = 'button';
+    impBtn.className = 'ttb-icon-btn';
+    impBtn.id = 'ttb-import-font-btn';
+    impBtn.title = 'Import Downloaded Font (.ttf, .otf, .woff, .woff2)';
+    impBtn.textContent = '+Font';
+    impBtn.addEventListener('click', () => document.getElementById('file-input-font').click());
+    row2.appendChild(impBtn);
+
+    // Warp / Tracking / Stroke Compact Popover Dropdown (No Modal Popup!)
+    const moreAnchor = document.createElement('div');
+    moreAnchor.className = 'dropdown-anchor';
+    const moreBtn = document.createElement('button');
+    moreBtn.type = 'button';
+    moreBtn.className = 'ttb-icon-btn';
+    moreBtn.id = 'ttb-more-btn';
+    moreBtn.title = 'Warp Text, Tracking, Line Height & Outline Stroke';
+    moreBtn.textContent = 'Warp ▾';
+    const morePop = document.createElement('div');
+    morePop.className = 'dropdown-popover down-right';
+    morePop.id = 'popover-type-more';
+    morePop.hidden = true;
+    morePop.style.minWidth = '220px';
+    morePop.style.padding = '10px';
+    morePop.addEventListener('click', (e) => e.stopPropagation());
+
+    moreBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const willOpen = morePop.hidden;
+      this.closeAllDropdowns();
+      if (willOpen) {
+        morePop.innerHTML = '';
+        const wField = document.createElement('div');
+        wField.className = 'ctrl-field';
+        wField.innerHTML = `<label>Warp Text</label>
+          <select class="pc-select" id="ttb-warp-sel">
+            <option value="none" ${ts.warp === 'none' ? 'selected' : ''}>None</option>
+            <option value="arcUp" ${ts.warp === 'arcUp' ? 'selected' : ''}>Arc Up</option>
+            <option value="arcDown" ${ts.warp === 'arcDown' ? 'selected' : ''}>Arc Down</option>
+            <option value="wave" ${ts.warp === 'wave' ? 'selected' : ''}>Wave</option>
+          </select>`;
+        wField.querySelector('select').addEventListener('change', (ev) => applyLiveTypeChange((s) => { s.warp = ev.target.value; }));
+        morePop.appendChild(wField);
+
+        this.appendRangeRow(morePop, 'Tracking', -10, 40, 1, ts.tracking ?? 0, 'px', (v) => applyLiveTypeChange((s) => { s.tracking = v; }));
+        this.appendRangeRow(morePop, 'Line Height', 80, 220, 5, Math.round((ts.lineHeight || 1.25) * 100), '%', (v) => applyLiveTypeChange((s) => { s.lineHeight = v / 100; }));
+        this.appendRangeRow(morePop, 'Outline Stroke', 0, 14, 1, ts.strokeWidth ?? 0, 'px', (v) => applyLiveTypeChange((s) => { s.strokeWidth = v; }));
+
+        const scRow = document.createElement('div');
+        scRow.style.display = 'flex';
+        scRow.style.alignItems = 'center';
+        scRow.style.justifyContent = 'space-between';
+        scRow.style.marginTop = '4px';
+        scRow.innerHTML = `<span style="font-size:11px;color:var(--pc-text-dim);">Stroke Color</span><input type="color" class="ttb-swatch" value="${ts.strokeColor || '#000000'}" />`;
+        scRow.querySelector('input').addEventListener('input', (ev) => applyLiveTypeChange((s) => { s.strokeColor = ev.target.value; }));
+        morePop.appendChild(scRow);
+
+        morePop.hidden = false;
+      }
+    });
+    moreAnchor.appendChild(moreBtn);
+    moreAnchor.appendChild(morePop);
+    row2.appendChild(moreAnchor);
+
+    // Commit (✓) & Cancel (✕) Photoshop Buttons on the Right when actively typing!
+    if (this.inlineTextSession) {
+      const spacer = document.createElement('div');
+      spacer.style.flex = '1';
+      row2.appendChild(spacer);
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'ttb-icon-btn cancel';
+      cancelBtn.id = 'ttb-cancel-text';
+      cancelBtn.title = 'Cancel Text Edit (Esc)';
+      cancelBtn.textContent = '✕';
+      cancelBtn.addEventListener('click', () => this.cancelInlineTextEdit());
+      row2.appendChild(cancelBtn);
+
+      const okBtn = document.createElement('button');
+      okBtn.type = 'button';
+      okBtn.className = 'ttb-icon-btn commit';
+      okBtn.id = 'ttb-commit-text';
+      okBtn.title = 'Commit Text Layer (Ctrl+Enter)';
+      okBtn.textContent = '✓';
+      okBtn.addEventListener('click', () => this.commitInlineTextEdit());
+      row2.appendChild(okBtn);
+    }
+
+    bar.appendChild(row2);
   }
 
   /* ==========================================================================
@@ -1273,6 +1959,11 @@ class ProStudioMobileApp {
   renderToolOptionsStrip() {
     const strip = document.getElementById('tool-options-strip');
     strip.innerHTML = '';
+    if (this.activeTool === 'text') {
+      strip.style.display = 'none';
+      return;
+    }
+    strip.style.display = '';
 
     const addSelectDropdown = (options, currentValue, onChange, title = '') => {
       const sel = document.createElement('select');
@@ -1808,11 +2499,50 @@ class ProStudioMobileApp {
     }
 
     if (this.activeTool === 'text') {
-      if (layer && layer.kind === 'text') {
-        this.openTextEditorModal(layer);
-      } else {
-        this.openTextEditorModal(null, pt.x, pt.y);
+      const hitLayer = this.hitTestTextLayer(pt.x, pt.y);
+      if (this.inlineTextSession) {
+        const wasSame = hitLayer && hitLayer.id === this.inlineTextSession.layer.id;
+        if (wasSame) return;
+        this.commitInlineTextEdit();
+        if (hitLayer) {
+          this.startInlineTextEdit(hitLayer, false);
+        }
+        return;
       }
+
+      if (hitLayer) {
+        this.startInlineTextEdit(hitLayer, false);
+        return;
+      }
+
+      // Click anywhere on canvas -> immediately create live text layer with pre-selected "Lorem Ipsum" and start typing!
+      const ts = this.typeSettings;
+      const newLayer = doc.createLayerObject({
+        name: 'Lorem Ipsum',
+        kind: 'text',
+        textData: {
+          text: 'Lorem Ipsum',
+          fontFamily: ts.fontFamily || 'Impact, sans-serif',
+          fontSize: ts.fontSize || 72,
+          fontWeight: ts.fontWeight || '400',
+          italic: Boolean(ts.italic),
+          antiAlias: ts.antiAlias || 'sharp',
+          color: ts.color || '#111827',
+          align: ts.align || 'center',
+          lineHeight: ts.lineHeight || 1.2,
+          tracking: ts.tracking || 0,
+          orientation: ts.orientation || 'horizontal',
+          warp: ts.warp || 'none',
+          warpBend: ts.warpBend ?? 35,
+          strokeWidth: ts.strokeWidth || 0,
+          strokeColor: ts.strokeColor || '#000000',
+          x: Math.round(pt.x),
+          y: Math.round(pt.y)
+        }
+      });
+      doc.layers.push(newLayer);
+      doc.activeLayerId = newLayer.id;
+      this.startInlineTextEdit(newLayer, true);
       return;
     }
 
@@ -2343,6 +3073,10 @@ class ProStudioMobileApp {
 
     ctx.restore();
     ctx.restore();
+
+    if (this.inlineTextSession) {
+      this.syncInlineTextOverlay();
+    }
   }
 
   drawCheckerboard(ctx, width, height) {
@@ -3454,11 +4188,13 @@ class ProStudioMobileApp {
         const editT = document.createElement('button');
         editT.type = 'button';
         editT.className = 'icon-btn';
-        editT.title = 'Edit Text & Font';
+        editT.title = 'Edit Text Directly on Canvas';
         editT.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
         editT.addEventListener('click', (e) => {
           e.stopPropagation();
-          this.openTextEditorModal(lyr);
+          this.setRightLayersOpen(false);
+          this.selectTool('text');
+          this.startInlineTextEdit(lyr, false);
         });
         rowActions.appendChild(editT);
       }
