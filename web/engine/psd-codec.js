@@ -1,6 +1,5 @@
 /* ============================================================================
- * PhotoCraft Mobile — Clean-Room Binary PSD (8BPS) Reader & Writer + .pcraft
- * Mirrors craft-psd / photocraft-io layered document round-trip
+ * ProStudio Mobile — Binary PSD (8BPS) Reader & Writer
  * ============================================================================ */
 
 const BLEND_TO_PSD = {
@@ -28,7 +27,7 @@ const PSD_TO_BLEND = Object.fromEntries(
 
 export class PsdCodec {
   /**
-   * Encode a PhotoCraft Mobile document into a binary Adobe Photoshop .PSD (8BPS) Uint8Array.
+   * Encode a ProStudio Mobile document into a binary Adobe Photoshop .PSD (8BPS) Uint8Array.
    * Writes both the multi-layer Layer & Mask Information section and the composite Image Data section.
    */
   static encodePsd(doc, compositeCanvas) {
@@ -202,7 +201,7 @@ export class PsdCodec {
   }
 
   /**
-   * Decode a binary .PSD file ArrayBuffer into a structured PhotoCraft document descriptor.
+   * Decode a binary .PSD file ArrayBuffer into a structured ProStudio document descriptor.
    * Supports Raw (0) and RLE PackBits (1) channel compression.
    */
   static decodePsd(arrayBuffer) {

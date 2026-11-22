@@ -1,7 +1,6 @@
 /* ============================================================================
- * PhotoCraft Mobile — Image Processing Algorithms, Adjustments, Filters,
- * Perspective Homography Crop, Select Subject (Saliency/GrabCut), & Layer Effects
- * Mirrors crates/algo and crates/compose/src/effects
+ * ProStudio Mobile — Image Processing Algorithms, Adjustments, Filters,
+ * Perspective Homography Crop, Select Subject & Layer Effects
  * ============================================================================ */
 
 function clamp8(v) {
@@ -11,7 +10,7 @@ function clamp8(v) {
 export class Algorithms {
   /**
    * Compute 256-bin RGB + Luminance histogram and summary statistics
-   * (Mean, Std Dev, Median, Pixels) matching PhotoCraft's Histogram panel.
+   * (Mean, Std Dev, Median, Pixels).
    */
   static computeHistogram(imageData) {
     const data = imageData.data;
@@ -341,7 +340,7 @@ export class Algorithms {
   }
 
   /**
-   * Apply a PhotoCraft Filter to an ImageData buffer and return modified ImageData.
+   * Apply a ProStudio Filter to an ImageData buffer and return modified ImageData.
    */
   static applyFilterToImageData(imageData, filterId, params, selectionMask = null) {
     const width = imageData.width;
@@ -644,7 +643,7 @@ export class Algorithms {
 
   /**
    * ============================================================================
-   * Perspective Crop Projective Homography Warper (crates/ui-egui/src/tools/perspective_crop_ui.rs)
+   * Perspective Crop Projective Homography Warper 
    * Maps the 4 quad corners [TL, TR, BR, BL] onto an upright rectangle [0..outW, 0..outH]
    * using a 3x3 projective homography and sub-pixel bilinear sampling.
    * ============================================================================
@@ -788,7 +787,7 @@ export class Algorithms {
 
   /**
    * ============================================================================
-   * Select -> Subject (crates/algo/src/segment/subject.rs)
+   * Select -> Subject 
    * Multi-cluster backdrop model from image frame + frequency-tuned CIELAB saliency
    * + Otsu threshold + exterior background flood-fill + interior hole filling + contour extraction.
    * ============================================================================
@@ -984,8 +983,8 @@ export class Algorithms {
 
   /**
    * ============================================================================
-   * Full Photoshop / PhotoCraft Layer Effects & Blending Options Renderer
-   * Mirrors crates/doc/src/effects.rs & crates/compose/src/effects
+   * Full Photoshop / ProStudio Layer Effects & Blending Options Renderer
+   * 
    * ============================================================================
    */
   static createDefaultLayerStyles() {

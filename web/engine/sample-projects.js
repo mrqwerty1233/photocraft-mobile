@@ -1,18 +1,17 @@
 /* ============================================================================
- * PhotoCraft Mobile — Built-in Multi-Layer Showcase PSD Documents
- * Inspired by PhotoCraft's README artworks (The Great Wave, Earthrise, Masks)
+ * ProStudio Mobile — Built-in Multi-Layer Sample PSD Documents
  * ============================================================================ */
 
-import { PhotoCraftDoc } from './photocraft-engine.js';
+import { StudioDoc } from './studio-engine.js';
 
 export class SampleProjects {
-  static createGreatWaveShowcase() {
+  static createOceanWaveProject() {
     const W = 900;
     const H = 1120;
-    const doc = new PhotoCraftDoc(W, H, 'Great-Wave-Kanagawa.psd');
+    const doc = new StudioDoc(W, H, 'Ocean-Wave-Poster.psd');
 
-    // Layer 1: Sky & Mt. Fuji Backdrop
-    const skyLayer = doc.createLayerObject({ name: 'Sky & Mount Fuji', kind: 'raster' });
+    // Layer 1: Sky & Mountain Backdrop
+    const skyLayer = doc.createLayerObject({ name: 'Sky & Mountain Backdrop', kind: 'raster' });
     const sCtx = skyLayer.canvas.getContext('2d');
     const skyGrad = sCtx.createLinearGradient(0, 0, 0, H);
     skyGrad.addColorStop(0, '#e8d7b9');
@@ -22,14 +21,12 @@ export class SampleProjects {
     sCtx.fillStyle = skyGrad;
     sCtx.fillRect(0, 0, W, H);
 
-    // Warm horizon glow
     const sunGrad = sCtx.createRadialGradient(W * 0.68, H * 0.48, 20, W * 0.68, H * 0.48, 340);
     sunGrad.addColorStop(0, 'rgba(255, 224, 178, 0.72)');
     sunGrad.addColorStop(1, 'rgba(255, 224, 178, 0)');
     sCtx.fillStyle = sunGrad;
     sCtx.fillRect(0, 0, W, H);
 
-    // Mount Fuji silhouette & snow cap
     sCtx.save();
     sCtx.beginPath();
     sCtx.moveTo(W * 0.36, H * 0.68);
@@ -37,21 +34,20 @@ export class SampleProjects {
     sCtx.lineTo(W * 0.71, H * 0.48);
     sCtx.quadraticCurveTo(W * 0.78, H * 0.61, W * 0.96, H * 0.68);
     sCtx.closePath();
-    const fujiGrad = sCtx.createLinearGradient(0, H * 0.48, 0, H * 0.68);
-    fujiGrad.addColorStop(0, '#f8f9fa');
-    fujiGrad.addColorStop(0.28, '#dce5ef');
-    fujiGrad.addColorStop(0.35, '#2b4c73');
-    fujiGrad.addColorStop(1, '#162b47');
-    sCtx.fillStyle = fujiGrad;
+    const peakGrad = sCtx.createLinearGradient(0, H * 0.48, 0, H * 0.68);
+    peakGrad.addColorStop(0, '#f8f9fa');
+    peakGrad.addColorStop(0.28, '#dce5ef');
+    peakGrad.addColorStop(0.35, '#2b4c73');
+    peakGrad.addColorStop(1, '#162b47');
+    sCtx.fillStyle = peakGrad;
     sCtx.fill();
     sCtx.restore();
     doc.layers.push(skyLayer);
 
-    // Layer 2: Prussian Blue Great Wave & Foam Claws
-    const waveLayer = doc.createLayerObject({ name: 'Prussian Blue Wave', kind: 'raster' });
+    // Layer 2: Ocean Wave Foreground
+    const waveLayer = doc.createLayerObject({ name: 'Cobalt Ocean Wave', kind: 'raster' });
     const wCtx = waveLayer.canvas.getContext('2d');
 
-    // Deep ocean swell base
     wCtx.save();
     wCtx.beginPath();
     wCtx.moveTo(0, H * 0.42);
@@ -69,7 +65,6 @@ export class SampleProjects {
     wCtx.fillStyle = waveGrad;
     wCtx.fill();
 
-    // Inner cobalt ribs
     wCtx.strokeStyle = '#3b73a8';
     wCtx.lineWidth = 5;
     for (let r = 0; r < 7; r++) {
@@ -86,7 +81,6 @@ export class SampleProjects {
       wCtx.stroke();
     }
 
-    // White seafoam crest & droplets
     wCtx.fillStyle = '#f6f2e8';
     const foamCircles = [
       [W * 0.52, H * 0.25, 42],
@@ -102,7 +96,6 @@ export class SampleProjects {
       wCtx.arc(fx, fy, fr, 0, Math.PI * 2);
       wCtx.fill();
     }
-    // Spray droplets
     for (let i = 0; i < 48; i++) {
       const sx = W * 0.25 + ((i * 73) % (W * 0.55));
       const sy = H * 0.16 + ((i * 59) % (H * 0.28));
@@ -114,9 +107,9 @@ export class SampleProjects {
     wCtx.restore();
     doc.layers.push(waveLayer);
 
-    // Layer 3: Caption Card (Vector Shape Layer with Drop Shadow)
+    // Layer 3: Title Card Shape Layer with Drop Shadow
     const cardLayer = doc.createLayerObject({
-      name: 'Caption Card',
+      name: 'Title Badge Card',
       kind: 'shape',
       opacity: 0.92,
       shapeData: {
@@ -131,19 +124,17 @@ export class SampleProjects {
         cornerRadius: 20
       },
       styles: {
-        dropShadow: { enabled: true, color: '#000000', opacity: 0.72, angle: 120, distance: 14, blur: 24 },
-        outerGlow: { enabled: false, color: '#378ef0', opacity: 0.6, size: 16 },
-        stroke: { enabled: false, color: '#ffffff', opacity: 1.0, size: 2 }
+        dropShadow: { enabled: true, color: '#000000', opacity: 0.72, angle: 120, distance: 14, size: 24 }
       }
     });
     doc.layers.push(cardLayer);
 
-    // Layer 4: Live Type Layer (Title & Credit)
+    // Layer 4: Live Editable Type Layer
     const titleLayer = doc.createLayerObject({
-      name: 'THE GREAT WAVE',
+      name: 'PACIFIC SWELL',
       kind: 'text',
       textData: {
-        text: 'THE GREAT WAVE\nKatsushika Hokusai · c. 1831',
+        text: 'PACIFIC SWELL\nLayered Mobile Studio Edition',
         fontFamily: 'Inter, sans-serif',
         fontSize: 44,
         fontWeight: '700',
@@ -156,14 +147,12 @@ export class SampleProjects {
         y: 892
       },
       styles: {
-        dropShadow: { enabled: true, color: '#000000', opacity: 0.65, angle: 125, distance: 6, blur: 10 },
-        outerGlow: { enabled: false, color: '#378ef0', opacity: 0.7, size: 14 },
-        stroke: { enabled: false, color: '#ffffff', opacity: 1, size: 2 }
+        dropShadow: { enabled: true, color: '#000000', opacity: 0.65, angle: 125, distance: 6, size: 10 }
       }
     });
     doc.layers.push(titleLayer);
 
-    // Layer 5: Vibrance Adjustment Layer (Non-destructive)
+    // Layer 5: Vibrance Adjustment Layer
     const vibLayer = doc.createLayerObject({
       name: 'Vibrance +24',
       kind: 'adjustment',
@@ -174,7 +163,7 @@ export class SampleProjects {
     });
     doc.layers.push(vibLayer);
 
-    // Layer 6: Curves S-Curve Contrast Adjustment Layer (Non-destructive)
+    // Layer 6: Curves Adjustment Layer
     const curvesLayer = doc.createLayerObject({
       name: 'Curves (Contrast S-Curve)',
       kind: 'adjustment',
@@ -192,16 +181,15 @@ export class SampleProjects {
 
     doc.activeLayerId = waveLayer.id;
     doc.compose();
-    doc.pushHistory('Open Great-Wave-Kanagawa.psd');
+    doc.pushHistory('Open Ocean-Wave-Poster.psd');
     return doc;
   }
 
-  static createEarthriseShowcase() {
+  static createDeepSpaceProject() {
     const W = 900;
     const H = 1120;
-    const doc = new PhotoCraftDoc(W, H, 'Apollo8-Earthrise-Styles.psd');
+    const doc = new StudioDoc(W, H, 'Deep-Space-Horizon.psd');
 
-    // Layer 1: Deep Space Starfield
     const space = doc.createLayerObject({ name: 'Deep Space Starfield', kind: 'raster' });
     const sCtx = space.canvas.getContext('2d');
     sCtx.fillStyle = '#05070d';
@@ -217,8 +205,7 @@ export class SampleProjects {
     }
     doc.layers.push(space);
 
-    // Layer 2: Earth Sphere
-    const earth = doc.createLayerObject({ name: 'Earth Globe', kind: 'raster' });
+    const earth = doc.createLayerObject({ name: 'Orbital Planet', kind: 'raster' });
     const eCtx = earth.canvas.getContext('2d');
     const cx = W * 0.5;
     const cy = H * 0.36;
@@ -236,7 +223,6 @@ export class SampleProjects {
     eCtx.fillStyle = earthGrad;
     eCtx.fillRect(cx - radius, cy - radius, radius * 2, radius * 2);
 
-    // Cloud swirls
     eCtx.fillStyle = 'rgba(255, 255, 255, 0.65)';
     for (let c = 0; c < 8; c++) {
       eCtx.beginPath();
@@ -245,7 +231,7 @@ export class SampleProjects {
         cy - 50 + (c % 3) * 44,
         48,
         14,
-        (c * 0.35),
+        c * 0.35,
         0,
         Math.PI * 2
       );
@@ -255,8 +241,7 @@ export class SampleProjects {
     earth.styles.outerGlow = { enabled: true, color: '#45a1ff', opacity: 0.85, size: 32 };
     doc.layers.push(earth);
 
-    // Layer 3: Lunar Horizon Foreground
-    const moon = doc.createLayerObject({ name: 'Lunar Surface Horizon', kind: 'raster' });
+    const moon = doc.createLayerObject({ name: 'Crater Horizon', kind: 'raster' });
     const mCtx = moon.canvas.getContext('2d');
     mCtx.beginPath();
     mCtx.moveTo(0, H * 0.68);
@@ -272,14 +257,13 @@ export class SampleProjects {
     mCtx.fill();
     doc.layers.push(moon);
 
-    // Layer 4: EARTHRISE Type Layer with Outer Glow & Stroke
     const typeLyr = doc.createLayerObject({
-      name: 'EARTHRISE',
+      name: 'ORBITAL HORIZON',
       kind: 'text',
       textData: {
-        text: 'EARTHRISE\nAPOLLO 8 · DECEMBER 1968',
+        text: 'ORBITAL HORIZON\nLAYER STYLES EDITION',
         fontFamily: 'Inter, sans-serif',
-        fontSize: 54,
+        fontSize: 52,
         fontWeight: '700',
         color: '#ffffff',
         align: 'center',
@@ -290,21 +274,21 @@ export class SampleProjects {
         y: H * 0.84
       },
       styles: {
-        dropShadow: { enabled: true, color: '#000000', opacity: 0.8, angle: 120, distance: 10, blur: 18 },
+        dropShadow: { enabled: true, color: '#000000', opacity: 0.8, angle: 120, distance: 10, size: 18 },
         outerGlow: { enabled: true, color: '#378ef0', opacity: 0.9, size: 24 },
-        stroke: { enabled: true, color: '#7cc0ff', opacity: 1.0, size: 2 }
+        stroke: { enabled: true, color: '#7cc0ff', opacity: 1.0, size: 2, position: 'outside', fillType: 'color' }
       }
     });
     doc.layers.push(typeLyr);
 
     doc.activeLayerId = typeLyr.id;
     doc.compose();
-    doc.pushHistory('Open Apollo8-Earthrise-Styles.psd');
+    doc.pushHistory('Open Deep-Space-Horizon.psd');
     return doc;
   }
 
   static createBlankDocument(width = 1080, height = 1350, bgColor = '#ffffff', title = 'Untitled-Mobile.psd') {
-    const doc = new PhotoCraftDoc(width, height, title);
+    const doc = new StudioDoc(width, height, title);
     const bg = doc.createLayerObject({ name: 'Background', kind: 'raster' });
     if (bgColor !== 'transparent') {
       const ctx = bg.canvas.getContext('2d');

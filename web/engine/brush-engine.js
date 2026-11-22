@@ -1,6 +1,6 @@
 /* ============================================================================
- * PhotoCraft Mobile — Brush, Retouch, Flood-Fill & Gradient Engine
- * Mirrors crates/paint (Dabs, Hardness, Flow, Pulled-String Smoothing, Pressure)
+ * ProStudio Mobile — High-Performance Brush, Retouch, Flood-Fill & Gradient Engine
+ * Optimized with direct-dab fast path and dirty-rect bounding box compositing
  * ============================================================================ */
 
 import { Algorithms } from './algorithms.js';
@@ -18,18 +18,17 @@ export class BrushEngine {
   constructor() {
     this.presetId = 'softRound';
     this.size = 24;
-    this.hardness = 35; // 0..100
-    this.opacity = 100; // 1..100
-    this.flow = 90; // 1..100
-    this.smoothing = 45; // 0..100 (EMA / pulled-string)
+    this.hardness = 35;
+    this.opacity = 100;
+    this.flow = 90;
+    this.smoothing = 40;
     this.spacing = 0.14;
-    this.scatter = 0; // 0..1
+    this.scatter = 0;
     this.pressureSize = true;
     this.pressureOpacity = false;
     this.bucketTolerance = 32;
-    this.gradientType = 'linear'; // 'linear' | 'radial'
+    this.gradientType = 'linear';
 
-    // Active stroke state
     this.activeStroke = null;
   }
 
@@ -45,31 +44,37 @@ export class BrushEngine {
     this.scatter = p.scatter;
   }
 
-  /**
-   * Begin a brush/eraser/heal/dodge stroke on the target canvas (layer or mask).
-   */
   beginStroke(tool, targetCanvas, x, y, pressure = 1.0, fgColor = '#378ef0', bgColor = '#ffffff', editingMask = false, selectionCanvas = null) {
     const width = targetCanvas.width;
     const height = targetCanvas.height;
 
-    // Scratch canvas for live stroke accumulation so opacity ceiling is respected per-stroke
-    const strokeCanvas = document.createElement('canvas');
-    strokeCanvas.width = width;
-    strokeCanvas.height = height;
-    const strokeCtx = strokeCanvas.getContext('2d');
-
-    // Snapshot of target layer before stroke
     const baseCanvas = document.createElement('canvas');
     baseCanvas.width = width;
     baseCanvas.height = height;
     baseCanvas.getContext('2d').drawImage(targetCanvas, 0, 0);
 
-    // For smudge/heal, sample neighborhood
-    let healOffset = { dx: -Math.max(16, this.size * 1.2), dy: -Math.max(12, this.size * 0.8) };
+    // Direct fast path when opacity is 100%, no selection clipping, and standard brush/eraser/heal
+    const directMode =
+      this.opacity >= 99 &&
+      !selectionCanvas &&
+      (tool === 'brush' || tool === 'eraser' || tool === 'heal');
+
+    let strokeCanvas = null;
+    let strokeCtx = null;
+    if (!directMode) {
+      strokeCanvas = document.createElement('canvas');
+      strokeCanvas.width = width;
+      strokeCanvas.height = height;
+      strokeCtx = strokeCanvas.getContext('2d');
+    }
+
+    const healOffset = { dx: -Math.max(16, this.size * 1.2), dy: -Math.max(12, this.size * 0.8) };
 
     this.activeStroke = {
       tool,
+      directMode,
       targetCanvas,
+      targetCtx: targetCanvas.getContext('2d'),
       baseCanvas,
       strokeCanvas,
       strokeCtx,
@@ -82,28 +87,29 @@ export class BrushEngine {
       bgColor,
       editingMask,
       selectionCanvas,
-      healOffset
+      healOffset,
+      dirtyMinX: width,
+      dirtyMinY: height,
+      dirtyMaxX: 0,
+      dirtyMaxY: 0
     };
 
     this.stampDab(x, y, pressure);
     this.commitStrokePreview();
   }
 
-  /**
-   * Continue stroke to (x, y) with EMA pulled-string smoothing and equidistant dab stepping.
-   */
   moveStroke(x, y, pressure = 1.0) {
     const st = this.activeStroke;
     if (!st) return;
 
-    const alpha = 1 - (this.smoothing / 100) * 0.82;
+    const alpha = 1 - (this.smoothing / 100) * 0.8;
     const nx = st.smoothX + (x - st.smoothX) * alpha;
     const ny = st.smoothY + (y - st.smoothY) * alpha;
 
     const dx = nx - st.lastX;
     const dy = ny - st.lastY;
     const dist = Math.hypot(dx, dy);
-    const step = Math.max(1.2, this.size * this.spacing);
+    const step = Math.max(1.5, this.size * this.spacing);
 
     if (dist + st.carryDist >= step) {
       let traveled = step - st.carryDist;
@@ -142,7 +148,6 @@ export class BrushEngine {
     const radius = effSize / 2;
     const effFlow = (this.flow / 100) * (this.pressureOpacity ? pNorm : 1.0);
 
-    // Optional scatter jitter
     let sx = x;
     let sy = y;
     if (this.scatter > 0) {
@@ -151,11 +156,21 @@ export class BrushEngine {
       sy += (Algorithms.hashCoord(Math.round(x), Math.round(y), 23) - 0.5) * jitter;
     }
 
-    const ctx = st.strokeCtx;
+    // Expand dirty bounding box
+    const pad = Math.ceil(radius + 4);
+    st.dirtyMinX = Math.max(0, Math.min(st.dirtyMinX, Math.floor(sx - pad)));
+    st.dirtyMinY = Math.max(0, Math.min(st.dirtyMinY, Math.floor(sy - pad)));
+    st.dirtyMaxX = Math.min(st.targetCanvas.width, Math.max(st.dirtyMaxX, Math.ceil(sx + pad)));
+    st.dirtyMaxY = Math.min(st.targetCanvas.height, Math.max(st.dirtyMaxY, Math.ceil(sy + pad)));
+
+    const ctx = st.directMode ? st.targetCtx : st.strokeCtx;
     ctx.save();
 
+    if (st.directMode && st.tool === 'eraser' && !st.editingMask) {
+      ctx.globalCompositeOperation = 'destination-out';
+    }
+
     if (st.tool === 'heal') {
-      // Spot heal / clone: draw soft-masked patch from offset neighborhood of baseCanvas
       const srcX = Math.max(radius, Math.min(st.baseCanvas.width - radius, sx + st.healOffset.dx));
       const srcY = Math.max(radius, Math.min(st.baseCanvas.height - radius, sy + st.healOffset.dy));
       const dab = document.createElement('canvas');
@@ -216,22 +231,55 @@ export class BrushEngine {
 
   commitStrokePreview() {
     const st = this.activeStroke;
-    if (!st) return;
+    if (!st || st.directMode) return;
 
-    const targetCtx = st.targetCanvas.getContext('2d');
-    targetCtx.clearRect(0, 0, st.targetCanvas.width, st.targetCanvas.height);
-    targetCtx.drawImage(st.baseCanvas, 0, 0);
+    const dw = st.dirtyMaxX - st.dirtyMinX;
+    const dh = st.dirtyMaxY - st.dirtyMinY;
+    if (dw <= 0 || dh <= 0) return;
 
-    // If selection is active, clip strokeCanvas to selectionCanvas
+    const targetCtx = st.targetCtx;
+    targetCtx.clearRect(st.dirtyMinX, st.dirtyMinY, dw, dh);
+    targetCtx.drawImage(
+      st.baseCanvas,
+      st.dirtyMinX,
+      st.dirtyMinY,
+      dw,
+      dh,
+      st.dirtyMinX,
+      st.dirtyMinY,
+      dw,
+      dh
+    );
+
     let strokeSource = st.strokeCanvas;
     if (st.selectionCanvas) {
       const clipped = document.createElement('canvas');
       clipped.width = st.targetCanvas.width;
       clipped.height = st.targetCanvas.height;
       const cCtx = clipped.getContext('2d');
-      cCtx.drawImage(st.strokeCanvas, 0, 0);
+      cCtx.drawImage(
+        st.strokeCanvas,
+        st.dirtyMinX,
+        st.dirtyMinY,
+        dw,
+        dh,
+        st.dirtyMinX,
+        st.dirtyMinY,
+        dw,
+        dh
+      );
       cCtx.globalCompositeOperation = 'destination-in';
-      cCtx.drawImage(st.selectionCanvas, 0, 0);
+      cCtx.drawImage(
+        st.selectionCanvas,
+        st.dirtyMinX,
+        st.dirtyMinY,
+        dw,
+        dh,
+        st.dirtyMinX,
+        st.dirtyMinY,
+        dw,
+        dh
+      );
       strokeSource = clipped;
     }
 
@@ -250,13 +298,20 @@ export class BrushEngine {
       targetCtx.globalCompositeOperation = 'source-over';
     }
 
-    targetCtx.drawImage(strokeSource, 0, 0);
+    targetCtx.drawImage(
+      strokeSource,
+      st.dirtyMinX,
+      st.dirtyMinY,
+      dw,
+      dh,
+      st.dirtyMinX,
+      st.dirtyMinY,
+      dw,
+      dh
+    );
     targetCtx.restore();
   }
 
-  /**
-   * Contiguous Flood Fill (Paint Bucket) at (startX, startY) with tolerance.
-   */
   floodFill(targetCanvas, startX, startY, fillHex, selectionMask = null) {
     const width = targetCanvas.width;
     const height = targetCanvas.height;
@@ -327,9 +382,6 @@ export class BrushEngine {
     ctx.putImageData(imgData, 0, 0);
   }
 
-  /**
-   * Draw Linear or Radial Gradient between (x0, y0) and (x1, y1).
-   */
   drawGradient(targetCanvas, x0, y0, x1, y1, fgHex, bgHex, selectionCanvas = null) {
     const width = targetCanvas.width;
     const height = targetCanvas.height;

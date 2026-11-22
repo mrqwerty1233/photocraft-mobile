@@ -1,84 +1,84 @@
-# PhotoCraft Mobile
+# ProStudio Mobile — Touch & Android Photo / PSD Studio
 
-**Touch-first Mobile & Native Android (`.APK`) version of [PhotoCraft (`storytold/photocraft`)](https://github.com/storytold/photocraft)** — an open-source, clean-room layered photo and `.PSD` editor.
+**ProStudio Mobile** is a high-performance, mobile-first layered raster photo and `.PSD` editor built for touchscreens (phones & tablets) and packaged as both a Progressive Web App (PWA) and a signed native **Android `.APK`**.
 
 ---
 
-## Features
+## Key Features
 
-### 1. Photoshop Crop & Slice Tool Family
-- **Crop Tool**: Rule of Thirds, Grid, Diagonal, and Golden Ratio overlays; aspect ratio presets (`Free`, `1:1`, `4:5`, `16:9`, `9:16`); and **Straighten (`-45°..+45°`)**.
-- **Perspective Crop Tool (`image.perspectiveCrop`)**: 4 independent draggable corner pins (`TL`, `TR`, `BR`, `BL`) with an interpolated projective perspective mesh (`Show Grid`), convexity validation, and an 8-DOF 3×3 projective homography solver with bilinear sub-pixel sampling across all layers.
-- **Slice Tool & Slice Select Tool (`slice.new`, `slice.fromLayer`, `slice.divide`, `slice.delete`)**:
-  - Draw numbered user slices (`01`, `02`...) or generate slices automatically from a layer's pixel bounds.
-  - Auto-computes surrounding dotted auto-slices (`Hide Auto Slices` toggle).
-  - Select, move, resize, divide horizontally & vertically (`Divide Slice...`), edit slice name/URL/alt-tag/format (`Slice Options...`), and batch-export slices as individual `.PNG` or `.JPG` files.
+### 1. High-Performance Canvas Engine
+- **On-Demand Dirty-Flag Compositor**: Zero idle CPU/GPU usage—the viewport redraws only when document pixels, selections, or view transforms change.
+- **Fast Interactive Layer Sandwich Caching**: During brush strokes and layer dragging, static layers below and above the active layer are pre-composited once at `pointerdown`, bypassing per-frame adjustment layer evaluations for smooth 60fps painting and dragging.
+- **Direct-Dab & Dirty-Rect Brush Engine**: Interpolated brush dabs render directly or composite only their localized dirty bounding box rather than clearing and copying the entire canvas on every pointer move.
+- **Clamped Device Pixel Ratio**: Viewport buffer scales up to `2x` DPR with an opaque hardware-accelerated 2D backing store.
 
-### 2. Type Tool & Downloaded Font Importer (`.ttf`, `.otf`, `.woff`, `.woff2`)
-- **Import Downloaded Fonts**: Pick any downloaded `.ttf`, `.otf`, `.woff`, or `.woff2` font file from device storage; dynamically registers via the `FontFace` API with local persistence.
-- **Full Typography Controls**: **Horizontal Type** and **Vertical Type (縦書き)**, Font Family, Weight (`400`–`900`), Italic, Font Size, **Tracking (Letter-Spacing)**, **Leading (Line-Height)**, Text Alignment, and **Warp Text** (`Arc Upper`, `Arc Lower`, `Flag / Sine Wave`).
+### 2. Storage Permission & Export Location Selector
+- **Android Runtime Storage Permission**: Native bridge (`ProStudioAndroid`) checks and requests `READ_MEDIA_IMAGES` (Android 13+) and `WRITE_EXTERNAL_STORAGE` / `READ_EXTERNAL_STORAGE` (Android 12 and below).
+- **Download / Export File Location Option**:
+  - **Ask Where to Save / Pick Custom Folder...**: Launches Android's native `Intent.ACTION_CREATE_DOCUMENT` system folder/file picker or desktop/mobile `window.showSaveFilePicker` API so you can pick any directory on your device.
+  - **Target Device Folders**: Choose **Downloads** (`/storage/emulated/0/Download`), **Pictures** (`/storage/emulated/0/Pictures`), **DCIM / Camera** (`/storage/emulated/0/DCIM`), or **Documents** (`/storage/emulated/0/Documents`).
+  - **Custom Subfolder & Filename**: Configure a custom subfolder (e.g. `ProStudio`) and file name directly in the Storage & Export dialog.
 
-### 3. Complete Blending Options & 10 Layer Styles (`fx`)
-- **Blending Options**:
-  - **16 Blend Modes** (`Normal`, `Multiply`, `Screen`, `Overlay`, `Darken`, `Lighten`, `Color Dodge`, `Color Burn`, `Hard Light`, `Soft Light`, `Difference`, `Exclusion`, `Hue`, `Saturation`, `Color`, `Luminosity`).
-  - **Layer Opacity (0–100%)** & **Fill Opacity (0–100%)** (scales layer interior pixels while keeping all Layer Styles at 100% strength).
-  - **Advanced Channels (`R`, `G`, `B`)** toggles and **Blend If (This Layer Shadows / Highlights clip)** sliders.
-- **10 Live Layer Effects (`fx`)**:
-  - **Stroke** (`Outside`, `Inside`, `Center`; Solid Color or Gradient fill)
-  - **Color Overlay** (Blend Mode, Color, Opacity)
-  - **Gradient Overlay** (`Linear`, `Radial`, `Reflected`; Angle, Scale, Start/End colors)
-  - **Pattern Overlay** (`Diagonal Stripes`, `Checkerboard`, `Polka Dots`, `Technical Grid`)
-  - **Drop Shadow** & **Inner Shadow** (Blend Mode, Color, Opacity, Angle, Distance, Size/Blur)
-  - **Outer Glow** & **Inner Glow** (Blend Mode, Color, Opacity, Size)
-  - **Bevel & Emboss** (Depth, Size, Soften, Light Angle, Highlight & Shadow controls)
-  - **Satin** (Color, Opacity, Distance, Size, Invert)
-  - Plus **Copy Layer Style**, **Paste Layer Style**, and **Clear All fx**.
+### 3. Compact Dropdown Menus (No Horizontal Sliding Bars)
+- **Top Header Dropdowns**:
+  - **`File ▾`**: New Document, Open Photo / PSD, Load Studio Presets, Storage & Export Location, Quick Save `.PSD` / `.PNG` / `.JPG`, and Download Android `.APK`.
+  - **`✨ Select ▾`**: One-tap **AI Select ➔ Subject**, All, Deselect, Invert, Feather, Expand, Contract, and Color Range.
+  - **`fx ▾`**: Quick jump to Blending Options & 10 Layer Styles.
+- **Left Floating `Brush ▾` Popover**: Replaces tall vertical on-canvas slider bars with a compact dropdown popover for Brush Size, Hardness, Opacity, Flow, and Color Swatches.
+- **6-Group Bottom Tool Bar with Upward Flyout Dropdowns (`▴`)**: All 18 studio tools fit across 6 grouped buttons without horizontal scrolling. Tap an active group to open its upward dropdown flyout.
 
-### 4. Select ➔ Subject & Selection Suite
-- **Select ➔ Subject (`selection.subject`)**: Multi-edge frame backdrop color clustering + perceptual saliency + Otsu adaptive threshold + exterior background flood-fill with pixel-accurate silhouette Marching Ants.
-- **One-Tap Subject Actions**: **Cutout to New Layer (`Layer via Copy ⌘J`)**, **Convert Selection to Layer Mask**, **Feather Selection**, **Invert Selection**, plus Rectangular Marquee, Elliptical Marquee, Freehand Lasso, and Magic Wand.
-
-### 5. Clean-Room Binary `.PSD` Reader & Writer + Scopes & Filters
-- **Binary `.PSD` (`8BPS`) Import & Export**: Opens multi-layer Adobe Photoshop `.PSD` files (Raw & RLE PackBits) and exports layered `.PSD`, `.PNG`, `.JPG`, and `.WEBP`.
-- **Non-Destructive Adjustments & Scopes**: Interactive **Curves Spline Editor** (per-channel `RGB`, `R`, `G`, `B`) over a live **256-bin RGB Histogram**; **Levels Editor** with `Mean`, `Std Dev`, `Median`, and `Pixels` stats; Vibrance, Hue/Saturation, Brightness/Contrast, Black & White, Photo Filter, and Invert.
-- **Live Filter Gallery**: Gaussian Blur, Motion Blur, Unsharp Mask, Twirl Distort, Wave Ripple, Mosaic Pixelate, Lens Vignette, Film Grain Noise, and Stylize Emboss with **Hold to Compare** preview.
+### 4. Complete Studio Toolset
+- **Crop & Slice Suite**:
+  - **Crop Tool (`C`)**: Rule-of-thirds grid, 8 handles, aspect ratio presets (`Free`, `1:1`, `4:5`, `16:9`, `9:16`, `4:3`, `3:2`), Straighten angle, and Rotate 90° CW/CCW.
+  - **Perspective Crop Tool**: Interactive 4-corner homography mesh (`TL`, `TR`, `BR`, `BL`) that rectifies keystone-distorted photos into a flat rectangle via inverse bilinear/homography warping.
+  - **Slice Tool & Slice Select Tool**: Drag user slices with auto-numbered badges, edit slice Name/URL/Target/Dimensions, and batch-export slices.
+- **Type Tool (`T`) & Custom Font Importer**:
+  - Upload downloaded `.ttf`, `.otf`, `.woff`, and `.woff2` font files at runtime via the `FontFace` API and persist them in `localStorage`.
+  - Live non-destructive text editing with font size, tracking, line height, weight, italic, alignment, and optional text stroke.
+- **Blending Options & 10 Layer Styles (`fx`)**:
+  - **General Blending**: 17 Blend Modes, Opacity, **Fill Opacity** (independently fades layer pixels while keeping layer styles at full strength), **R/G/B Channel Toggles**, and **Blend If** luminance ramps.
+  - **10 Layer Styles**: Drop Shadow, Inner Shadow, Outer Glow, Inner Glow, Bevel & Emboss, Satin, Color Overlay, Gradient Overlay, Pattern Overlay, and Stroke (`Outside`, `Inside`, `Center`).
+- **AI Select ➔ Subject**:
+  - Multi-cue foreground saliency segmentation combining corner/border background color modeling, center spatial prior, and Sobel edge density closure.
 
 ---
 
 ## Project Structure
 
 ```text
-photocraft-mobile/
+.
 ├── web/
-│   ├── index.html                  # Mobile touch app shell
-│   ├── styles.css                  # PhotoCraft theme tokens (Pro Dark, Pro Medium, Breeze Dark, Pro Light)
-│   ├── app.js                      # Multi-touch viewport, tools, modals & Android bridge controller
-│   ├── photocraft-mobile.apk       # Prebuilt, v2/v3-signed installable Android APK
-│   ├── engine/
-│   │   ├── photocraft-engine.js    # Document model, compositor, slices, type engine & command registry
-│   │   ├── algorithms.js           # Curves, Histogram, Perspective Homography, Select Subject & Layer Styles
-│   │   ├── brush-engine.js         # Brush dabs, hardness, smoothing, spot heal, flood fill & gradients
-│   │   ├── psd-codec.js            # Clean-room binary 8BPS .PSD reader & writer
-│   │   └── sample-projects.js      # Built-in multi-layer showcase PSD documents
-│   └── assets/                     # Official PhotoCraft icons & Inter / JetBrains Mono fonts
+│   ├── index.html               # Mobile studio UI with dropdown menus & storage modal
+│   ├── styles.css               # Dark studio theme, dropdown popovers & 6-column tool dock
+│   ├── app.js                   # On-demand canvas renderer, gestures, storage & tool controllers
+│   ├── manifest.json            # PWA web manifest
+│   ├── sw.js                    # Offline service worker
+│   └── engine/
+│       ├── studio-engine.js     # Document graph, history, layer styles (fx) & fast sandwich cache
+│       ├── brush-engine.js      # Direct-dab & dirty-rect pressure brush engine
+│       ├── algorithms.js        # 17 blend modes, adjustments, perspective warp & Select Subject
+│       ├── psd-codec.js         # Binary Adobe .PSD parser & encoder
+│       └── sample-projects.js   # Built-in multi-layer sample compositions
 └── android/
-    ├── build-apk.sh                # Standalone Android SDK 35 APK builder (aapt2, javac, d8, zipalign, apksigner)
-    ├── build.gradle
-    ├── settings.gradle
+    ├── build-apk.sh             # Standalone Android SDK 35 APK builder & v2/v3 signer
+    ├── build.gradle             # Gradle project configuration
     └── src/main/
-        ├── AndroidManifest.xml
-        ├── java/ai/storyteller/photocraft/mobile/MainActivity.java
-        └── res/
+        ├── AndroidManifest.xml  # Storage permissions & hardware-accelerated activity
+        └── java/com/prostudio/mobile/MainActivity.java
 ```
 
-## Running Locally
+---
 
+## Running Locally & Building the Android `.APK`
+
+### Run the Web Studio
 ```bash
-python3 -m http.server 8090 --directory web
+cd web
+python3 -m http.server 8090
 ```
 
-## Rebuilding the Native Android `.APK`
-
+### Build the Signed Android `.APK`
 ```bash
 ./android/build-apk.sh
 ```
+The signed, zipaligned APK is output to `web/prostudio-mobile.apk`.

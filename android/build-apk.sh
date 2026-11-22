@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# PhotoCraft Mobile — Self-Contained Native Android APK Builder
+# ProStudio Mobile — Self-Contained Native Android APK Builder
 # Uses Android SDK 35 (aapt2, javac, d8, zipalign, apksigner)
 # ==============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$APP_ROOT/../.." && pwd)"
 
 ANDROID_SDK="${ANDROID_HOME:-/opt/android-sdk}"
 BUILD_TOOLS="$ANDROID_SDK/build-tools/35.0.0"
@@ -22,7 +21,7 @@ BUILD_DIR="$SCRIPT_DIR/build"
 STAGING_ASSETS="$BUILD_DIR/staging_assets/www"
 RES_DIR="$SCRIPT_DIR/src/main/res"
 MANIFEST="$SCRIPT_DIR/src/main/AndroidManifest.xml"
-JAVA_SRC="$SCRIPT_DIR/src/main/java/ai/storyteller/photocraft/mobile/MainActivity.java"
+JAVA_SRC="$SCRIPT_DIR/src/main/java/com/prostudio/mobile/MainActivity.java"
 
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR/compiled_res" \
@@ -31,7 +30,7 @@ mkdir -p "$BUILD_DIR/compiled_res" \
          "$BUILD_DIR/dex" \
          "$STAGING_ASSETS"
 
-echo "[1/7] Copying official PhotoCraft launcher icons into Android mipmap directories..."
+echo "[1/7] Copying ProStudio Mobile launcher icons into Android mipmap directories..."
 mkdir -p "$RES_DIR/mipmap-mdpi" \
          "$RES_DIR/mipmap-hdpi" \
          "$RES_DIR/mipmap-xhdpi" \
@@ -44,9 +43,9 @@ cp "$APP_ROOT/web/assets/icons/icon-128.png" "$RES_DIR/mipmap-xhdpi/ic_launcher.
 cp "$APP_ROOT/web/assets/icons/icon-256.png" "$RES_DIR/mipmap-xxhdpi/ic_launcher.png"
 cp "$APP_ROOT/web/assets/icons/icon-512.png" "$RES_DIR/mipmap-xxxhdpi/ic_launcher.png"
 
-echo "[2/7] Bundling PhotoCraft Mobile web engine into Android APK assets/www/..."
+echo "[2/7] Bundling ProStudio Mobile web engine into Android APK assets/www/..."
 cp -r "$APP_ROOT/web/"* "$STAGING_ASSETS/"
-rm -f "$STAGING_ASSETS/photocraft-mobile.apk"
+rm -f "$STAGING_ASSETS/prostudio-mobile.apk"
 
 echo "[3/7] Compiling Android resources with aapt2..."
 "$AAPT2" compile --dir "$RES_DIR" -o "$BUILD_DIR/compiled_res/resources.zip"
@@ -91,9 +90,9 @@ keytool -genkeypair \
   -keyalg RSA \
   -keysize 2048 \
   -validity 10000 \
-  -dname "CN=PhotoCraft Mobile, OU=ArtCraft, O=Storytold, L=San Francisco, ST=CA, C=US" >/dev/null 2>&1
+  -dname "CN=ProStudio Mobile, OU=Studio, O=ProStudio, L=San Francisco, ST=CA, C=US" >/dev/null 2>&1
 
-FINAL_APK="$BUILD_DIR/photocraft-mobile.apk"
+FINAL_APK="$BUILD_DIR/prostudio-mobile.apk"
 "$APKSIGNER" sign \
   --ks "$KEYSTORE" \
   --ks-pass pass:android \
@@ -104,6 +103,6 @@ FINAL_APK="$BUILD_DIR/photocraft-mobile.apk"
 
 "$APKSIGNER" verify --verbose "$FINAL_APK"
 
-cp "$FINAL_APK" "$APP_ROOT/web/photocraft-mobile.apk"
+cp "$FINAL_APK" "$APP_ROOT/web/prostudio-mobile.apk"
 echo "Successfully built and verified signed APK:"
-ls -lh "$FINAL_APK" "$APP_ROOT/web/photocraft-mobile.apk"
+ls -lh "$FINAL_APK" "$APP_ROOT/web/prostudio-mobile.apk"

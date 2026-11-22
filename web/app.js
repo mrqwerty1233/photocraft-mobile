@@ -1,17 +1,13 @@
 /* ============================================================================
- * PhotoCraft Mobile — Main Interactive UI & Multi-Touch Viewport Controller
- * Includes:
- * - Crop Tool, Perspective Crop Tool (4-corner homography), Slice Tool & Slice Select Tool
- * - Text Tool with Downloaded Font Importer (.ttf, .otf, .woff, .woff2 via FontFace API)
- * - Full Photoshop Blending Options & 10 Layer Styles (Stroke, Color/Gradient/Pattern Overlay,
- *   Drop/Inner Shadow, Outer/Inner Glow, Bevel & Emboss, Satin, Fill Opacity, RGB Channels, Blend If)
- * - Select -> Subject (Saliency & Backdrop Cut with Silhouette Marching Ants & Cutout via Copy)
+ * ProStudio Mobile — Optimized Multi-Touch Viewport, Dropdown Menus,
+ * Storage Permission & Export Location Manager, Crop/Slice Suite,
+ * Custom Font Importer, and Full Blending Options & Layer Styles (fx)
  * ============================================================================ */
 
 import { Algorithms } from './engine/algorithms.js';
 import { PsdCodec } from './engine/psd-codec.js';
 import { BrushEngine, BRUSH_PRESETS } from './engine/brush-engine.js';
-import { PhotoCraftDoc, PhotoCraftSession, BLEND_MODES } from './engine/photocraft-engine.js';
+import { StudioDoc, StudioSession, BLEND_MODES } from './engine/studio-engine.js';
 import { SampleProjects } from './engine/sample-projects.js';
 
 const PRESET_SWATCHES = [
@@ -20,13 +16,21 @@ const PRESET_SWATCHES = [
 ];
 
 const BUILTIN_FONTS = [
-  { family: 'Inter, sans-serif', label: 'Inter (PhotoCraft UI)' },
+  { family: 'Inter, sans-serif', label: 'Inter (Studio Sans)' },
   { family: '"JetBrains Mono", monospace', label: 'JetBrains Mono' },
   { family: 'Georgia, serif', label: 'Georgia Serif' },
   { family: '"Times New Roman", serif', label: 'Times New Roman' },
   { family: 'Impact, sans-serif', label: 'Impact Display' },
   { family: '"Courier New", monospace', label: 'Courier Typewriter' },
-  { family: 'system-ui, sans-serif', label: 'System Sans' }
+  { family: 'system-ui, sans-serif', label: 'System UI' }
+];
+
+const EXPORT_LOCATIONS = [
+  { id: 'picker', label: 'Ask Where to Save (Pick Custom Folder...)', pathHint: 'System Directory / File Picker' },
+  { id: 'downloads', label: 'Downloads Folder', pathHint: '/storage/emulated/0/Download' },
+  { id: 'pictures', label: 'Pictures / Gallery Folder', pathHint: '/storage/emulated/0/Pictures' },
+  { id: 'dcim', label: 'DCIM / Camera Roll', pathHint: '/storage/emulated/0/DCIM' },
+  { id: 'documents', label: 'Documents Folder', pathHint: '/storage/emulated/0/Documents' }
 ];
 
 const FILTER_CATALOG = [
@@ -105,9 +109,27 @@ const FILTER_CATALOG = [
   }
 ];
 
-class PhotoCraftMobileApp {
+const TOOL_TO_GROUP = {
+  brush: { group: 'paint', label: 'Brush' },
+  eraser: { group: 'paint', label: 'Eraser' },
+  heal: { group: 'paint', label: 'Heal' },
+  tone: { group: 'paint', label: 'Dodge/Burn' },
+  select: { group: 'select', label: 'Select' },
+  crop: { group: 'crop', label: 'Crop' },
+  perspectiveCrop: { group: 'crop', label: 'Persp Crop' },
+  slice: { group: 'crop', label: 'Slice' },
+  sliceSelect: { group: 'crop', label: 'Slice Sel' },
+  text: { group: 'text', label: 'Type/Font' },
+  move: { group: 'move', label: 'Transform' },
+  fill: { group: 'fill', label: 'Fill/Grad' },
+  shape: { group: 'fill', label: 'Shapes' },
+  eyedropper: { group: 'fill', label: 'Sampler' },
+  hand: { group: 'fill', label: 'Pan/Zoom' }
+};
+
+class ProStudioMobileApp {
   constructor() {
-    this.session = new PhotoCraftSession();
+    this.session = new StudioSession();
     this.brush = new BrushEngine();
 
     // Active Tool & Sub-modes
@@ -118,20 +140,29 @@ class PhotoCraftMobileApp {
     this.shapeMode = 'rect'; // 'rect' | 'ellipse' | 'polygon' | 'star'
     this.wandTolerance = 34;
 
+    // Storage Permission & Export Location Settings
+    this.storagePermissionGranted = Boolean(
+      localStorage.getItem('ps_storage_granted') === 'true' ||
+        (window.ProStudioAndroid && typeof window.ProStudioAndroid.hasStoragePermission === 'function' && window.ProStudioAndroid.hasStoragePermission())
+    );
+    this.exportLocation = localStorage.getItem('ps_export_location') || 'downloads';
+    this.exportSubfolder = localStorage.getItem('ps_export_subfolder') || 'ProStudio';
+
     // Imported Custom Fonts Registry
-    this.importedFonts = []; // [{ family, label, fileName }]
+    this.importedFonts = [];
     this.activeFontFamily = BUILTIN_FONTS[0].family;
 
     // Active Colors
     this.fgColor = '#378ef0';
     this.bgColor = '#f6f2e8';
 
-    // Viewport Camera (Zoom & Pan)
+    // Viewport Camera (Zoom & Pan) + Dirty-Flag Render Scheduler
     this.zoom = 1;
     this.panX = 0;
     this.panY = 0;
+    this.renderPending = false;
 
-    // Active Slide-Up Sheet ('none' | 'layers' | 'adjustments' | 'filters' | 'project')
+    // Active Panel Sheet ('none' | 'layers' | 'adjustments' | 'filters' | 'project')
     this.activeSheet = 'none';
     this.activeAdjustTab = 'curves';
     this.activeCurveChannel = 'rgb';
@@ -154,27 +185,20 @@ class PhotoCraftMobileApp {
       photoDensity: 28
     };
 
-    // Active Filter Selection
     this.activeFilterId = 'gaussianBlur';
     this.activeFilterParams = { radius: 10 };
     this.compareOriginal = false;
 
-    // 1. Standard Crop Tool State
+    // Crop & Perspective Crop State
     this.cropBox = null;
-    this.cropAspect = 'free'; // 'free' | '1:1' | '4:5' | '16:9' | '9:16'
-    this.cropGridMode = 'thirds'; // 'thirds' | 'grid' | 'diagonal' | 'golden'
-    this.cropAngle = 0; // -45..45 degrees
+    this.cropAspect = 'free';
+    this.cropGridMode = 'thirds';
+    this.cropAngle = 0;
 
-    // 2. Perspective Crop Tool State (4-corner homography quad: TL, TR, BR, BL)
-    this.perspectiveQuad = null; // [{x,y}, {x,y}, {x,y}, {x,y}]
+    this.perspectiveQuad = null;
     this.perspectiveShowGrid = true;
-    this.perspectiveOutW = 0;
-    this.perspectiveOutH = 0;
 
-    // 3. Slice Tool & Slice Select Tool State
-    this.sliceConstraint = 'normal'; // 'normal' | 'fixedRatio' | 'fixedSize'
-
-    // Pointer / Multi-Touch Gesture State
+    // Multi-Touch State
     this.pointers = new Map();
     this.pinchStartDist = 0;
     this.pinchStartZoom = 1;
@@ -188,41 +212,75 @@ class PhotoCraftMobileApp {
     this.antsOffset = 0;
     this.theme = 'pro-dark';
 
+    // Native Android callback hook for storage permission result
+    window.onStoragePermissionResult = (granted, msg) => {
+      this.storagePermissionGranted = Boolean(granted);
+      localStorage.setItem('ps_storage_granted', this.storagePermissionGranted ? 'true' : 'false');
+      this.syncHeaderAndHUD();
+      this.showToast(msg || (granted ? 'Storage Permission Granted' : 'Using Scoped MediaStore Storage'));
+    };
+
     this.initDOM();
     this.restorePersistedFonts();
-    this.loadDocument(SampleProjects.createGreatWaveShowcase());
-    this.startAnimationLoop();
+    this.loadDocument(SampleProjects.createOceanWaveProject());
+    this.startSelectionAntsTimer();
   }
 
   get allFonts() {
     return [...this.importedFonts, ...BUILTIN_FONTS];
   }
 
+  /**
+   * Schedule a single hardware-accelerated viewport redraw on the next animation frame.
+   * Zero CPU/GPU waste when idle!
+   */
+  requestRender() {
+    if (this.renderPending) return;
+    this.renderPending = true;
+    requestAnimationFrame(() => {
+      this.renderPending = false;
+      this.renderViewport();
+    });
+  }
+
+  /**
+   * Lightweight timer that ONLY animates marching ants when a selection is active.
+   */
+  startSelectionAntsTimer() {
+    setInterval(() => {
+      if (this.session.doc?.hasSelection) {
+        this.antsOffset = (this.antsOffset + 2) % 16;
+        this.requestRender();
+      }
+    }, 150);
+  }
+
   initDOM() {
     this.viewportCanvas = document.getElementById('viewport-canvas');
-    this.viewportCtx = this.viewportCanvas.getContext('2d');
+    // Desynchronized & opaque hints for faster mobile GPU canvas blitting
+    this.viewportCtx = this.viewportCanvas.getContext('2d', { alpha: false });
     this.workspaceEl = document.getElementById('canvas-workspace');
 
-    if (window.PhotoCraftAndroid || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)) {
+    if (window.ProStudioAndroid || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)) {
       document.getElementById('outer-environment').classList.remove('phone-frame-mode');
       const banner = document.getElementById('desktop-host-banner');
-      if (banner && window.PhotoCraftAndroid) banner.style.display = 'none';
+      if (banner && window.ProStudioAndroid) banner.style.display = 'none';
     }
 
     document.getElementById('btn-frame-phone')?.addEventListener('click', () => {
       document.getElementById('outer-environment').classList.add('phone-frame-mode');
       document.getElementById('btn-frame-phone').classList.add('active');
       document.getElementById('btn-frame-full').classList.remove('active');
-      setTimeout(() => this.fitCanvasToViewport(), 260);
+      setTimeout(() => this.fitCanvasToViewport(), 240);
     });
     document.getElementById('btn-frame-full')?.addEventListener('click', () => {
       document.getElementById('outer-environment').classList.remove('phone-frame-mode');
       document.getElementById('btn-frame-full').classList.add('active');
       document.getElementById('btn-frame-phone').classList.remove('active');
-      setTimeout(() => this.fitCanvasToViewport(), 260);
+      setTimeout(() => this.fitCanvasToViewport(), 240);
     });
 
-    // Top bar actions
+    // Top bar Undo/Redo/Export
     document.getElementById('btn-undo').addEventListener('click', () => {
       if (this.session.doc?.canUndo()) {
         this.session.dispatch('edit.undo');
@@ -237,13 +295,35 @@ class PhotoCraftMobileApp {
         this.showToast('Redo');
       }
     });
-    document.getElementById('btn-select-menu').addEventListener('click', () => this.openSelectMenuModal());
+    document.getElementById('btn-export-modal').addEventListener('click', () => {
+      this.closeAllDropdowns();
+      this.openExportModal();
+    });
+
+    // Top Bar Dropdown Triggers (`File ▾`, `Select ▾`, `fx ▾`)
+    document.getElementById('btn-file-dropdown').addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleDropdown('popover-file-menu', () => this.populateFileDropdown());
+    });
+    document.getElementById('btn-select-dropdown').addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleDropdown('popover-select-menu', () => this.populateSelectDropdown());
+    });
+    document.getElementById('btn-fx-dropdown').addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleDropdown('popover-fx-menu', () => this.populateFxDropdown());
+    });
+
+    // Left Brush Settings Popover Dropdown (`24px ▾`)
+    document.getElementById('btn-brush-popover').addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleDropdown('popover-brush-settings', () => this.populateBrushPopover());
+    });
+
+    // HUD Badges
     document.getElementById('hud-zoom-badge').addEventListener('click', () => this.fitCanvasToViewport());
-    document.getElementById('hud-fx-badge').addEventListener('click', () => this.openLayerStylesModal());
+    document.getElementById('hud-storage-badge').addEventListener('click', () => this.openStorageSettingsModal());
     document.getElementById('hud-active-layer').addEventListener('click', () => this.toggleSheet('layers'));
-    document.getElementById('btn-open-project-sheet').addEventListener('click', () => this.toggleSheet('project'));
-    document.getElementById('btn-cmd-palette').addEventListener('click', () => this.openCommandPaletteModal());
-    document.getElementById('btn-export-modal').addEventListener('click', () => this.openExportModal());
 
     // Color swatches & swap
     document.getElementById('btn-color-picker').addEventListener('click', () => this.openColorPickerModal());
@@ -255,34 +335,20 @@ class PhotoCraftMobileApp {
       this.hapticTick();
     });
 
-    // Quick vertical sliders (Brush Size & Opacity)
-    this.bindVerticalQuickSlider(
-      document.getElementById('quick-size-track'),
-      (ratio) => {
-        this.brush.size = Math.max(1, Math.round(1 + ratio * 159));
-        this.syncQuickBrushPill();
-        this.renderToolOptionsStrip();
-      }
-    );
-    this.bindVerticalQuickSlider(
-      document.getElementById('quick-opacity-track'),
-      (ratio) => {
-        this.brush.opacity = Math.max(1, Math.round(ratio * 100));
-        this.syncQuickBrushPill();
-        this.renderToolOptionsStrip();
-      }
-    );
+    // 6-Group Tool Bar Flyout Dropdowns (`▴`)
+    this.initToolGroupFlyouts();
 
-    // Tool carousel buttons
-    document.querySelectorAll('.tool-item-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        this.selectTool(btn.dataset.tool);
-      });
+    // Close open dropdowns when clicking outside
+    document.addEventListener('pointerdown', (e) => {
+      if (!e.target.closest('.dropdown-anchor') && !e.target.closest('.tool-group-wrapper')) {
+        this.closeAllDropdowns();
+      }
     });
 
     // Bottom navigation dock tabs
     document.querySelectorAll('.nav-tab-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
+        this.closeAllDropdowns();
         const target = btn.dataset.sheet;
         if (target === 'none') {
           this.closeSheet();
@@ -316,7 +382,10 @@ class PhotoCraftMobileApp {
 
     this.bindCanvasEvents();
 
-    const ro = new ResizeObserver(() => this.resizeViewportCanvas());
+    const ro = new ResizeObserver(() => {
+      this.resizeViewportCanvas();
+      this.requestRender();
+    });
     ro.observe(this.workspaceEl);
 
     this.session.onChange(() => {
@@ -325,6 +394,7 @@ class PhotoCraftMobileApp {
         this.renderActiveSheet();
       }
       this.renderFloatingContextBar();
+      this.requestRender();
     });
 
     this.syncColorSwatches();
@@ -332,10 +402,340 @@ class PhotoCraftMobileApp {
     this.renderToolOptionsStrip();
   }
 
+  /* ==========================================================================
+   * Dropdown Popover System (Replaces Sliding / Slider Menus)
+   * ========================================================================== */
+  closeAllDropdowns() {
+    document.querySelectorAll('.dropdown-popover').forEach((el) => {
+      el.hidden = true;
+    });
+  }
+
+  toggleDropdown(popoverId, populateFn) {
+    const el = document.getElementById(popoverId);
+    if (!el) return;
+    const wasOpen = !el.hidden;
+    this.closeAllDropdowns();
+    if (!wasOpen) {
+      if (populateFn) populateFn(el);
+      el.hidden = false;
+    }
+  }
+
+  addDropdownMenuItem(container, label, badgeText, isActive, onClick) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `dropdown-item${isActive ? ' active' : ''}`;
+    btn.innerHTML = `
+      <span class="dropdown-item-left">${isActive ? '✓ ' : ''}${label}</span>
+      ${badgeText ? `<span class="dropdown-item-badge">${badgeText}</span>` : ''}
+    `;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.closeAllDropdowns();
+      onClick();
+    });
+    container.appendChild(btn);
+  }
+
+  populateFileDropdown() {
+    const menu = document.getElementById('popover-file-menu');
+    menu.innerHTML = `<div class="dropdown-section-label">Document &amp; File I/O</div>`;
+    this.addDropdownMenuItem(menu, '📄 New Blank Canvas...', '⌘N', false, () => this.openNewDocumentModal());
+    this.addDropdownMenuItem(menu, '📂 Open PSD or Image...', '⌘O', false, () => document.getElementById('file-input-open').click());
+    this.addDropdownMenuItem(menu, '🖼️ Place Image as Layer...', '', false, () => document.getElementById('file-input-place-layer').click());
+    this.addDropdownMenuItem(menu, '🔤 Import Font (.ttf/.otf)...', '', false, () => document.getElementById('file-input-font').click());
+
+    const d1 = document.createElement('div');
+    d1.className = 'dropdown-divider';
+    menu.appendChild(d1);
+
+    const lbl2 = document.createElement('div');
+    lbl2.className = 'dropdown-section-label';
+    lbl2.textContent = 'Storage & Export';
+    menu.appendChild(lbl2);
+
+    const locObj = EXPORT_LOCATIONS.find((l) => l.id === this.exportLocation);
+    this.addDropdownMenuItem(
+      menu,
+      '📁 Storage & Save Location...',
+      this.exportLocation === 'picker' ? 'Ask' : this.exportLocation,
+      false,
+      () => this.openStorageSettingsModal()
+    );
+    this.addDropdownMenuItem(menu, '💾 Export / Save As...', '.PSD/.PNG', false, () => this.openExportModal());
+
+    const d2 = document.createElement('div');
+    d2.className = 'dropdown-divider';
+    menu.appendChild(d2);
+
+    const lbl3 = document.createElement('div');
+    lbl3.className = 'dropdown-section-label';
+    lbl3.textContent = 'Sample Layered Projects';
+    menu.appendChild(lbl3);
+
+    this.addDropdownMenuItem(menu, '🌊 Ocean Wave Poster.psd', '6 Layers', false, () => {
+      this.loadDocument(SampleProjects.createOceanWaveProject());
+      this.showToast('Loaded Ocean-Wave-Poster.psd');
+    });
+    this.addDropdownMenuItem(menu, '🪐 Deep Space Horizon.psd', '4 Layers', false, () => {
+      this.loadDocument(SampleProjects.createDeepSpaceProject());
+      this.showToast('Loaded Deep-Space-Horizon.psd');
+    });
+  }
+
+  populateSelectDropdown() {
+    const menu = document.getElementById('popover-select-menu');
+    menu.innerHTML = `<div class="dropdown-section-label">Subject AI &amp; Selection</div>`;
+    this.addDropdownMenuItem(menu, '✨ Select ➔ Subject', 'Auto AI', false, () => {
+      this.session.dispatch('selection.subject');
+      this.showToast('Select ➔ Subject applied!');
+    });
+    this.addDropdownMenuItem(menu, '✂️ Cutout Subject to New Layer', '⌘J', false, () => {
+      if (!this.session.doc?.hasSelection) this.session.dispatch('selection.subject');
+      this.session.dispatch('layer.viaCopy');
+      this.showToast('Extracted Subject Cutout to New Layer!');
+    });
+    this.addDropdownMenuItem(menu, '🎭 Selection to Layer Mask', 'Mask', false, () => {
+      if (!this.session.doc?.hasSelection) this.session.dispatch('selection.subject');
+      this.session.dispatch('layer.addMask', { fromSelection: true });
+      this.showToast('Created Layer Mask from Selection');
+    });
+
+    const d = document.createElement('div');
+    d.className = 'dropdown-divider';
+    menu.appendChild(d);
+
+    this.addDropdownMenuItem(menu, '⬜ Select All', '⌘A', false, () => this.session.dispatch('selection.all'));
+    this.addDropdownMenuItem(menu, '⇄ Invert Selection', '⇧⌘I', false, () => this.session.dispatch('selection.invert'));
+    this.addDropdownMenuItem(menu, '☁️ Feather Selection (8 px)', '', false, () => {
+      this.session.dispatch('selection.feather', { radius: 8 });
+      this.showToast('Selection Feathered');
+    });
+    this.addDropdownMenuItem(menu, '✕ Deselect', '⌘D', false, () => this.session.dispatch('selection.deselect'));
+  }
+
+  populateFxDropdown() {
+    const menu = document.getElementById('popover-fx-menu');
+    const fx = this.session.doc?.activeLayer?.styles || {};
+    menu.innerHTML = `<div class="dropdown-section-label">Blending Options &amp; Layer Styles</div>`;
+
+    const items = [
+      { id: 'blendingOptions', label: '⚙ Blending Options...' },
+      { id: 'stroke', label: '▢ Stroke Outline...', key: 'stroke' },
+      { id: 'colorOverlay', label: '🎨 Color Overlay...', key: 'colorOverlay' },
+      { id: 'gradientOverlay', label: '🌈 Gradient Overlay...', key: 'gradientOverlay' },
+      { id: 'dropShadow', label: '🌑 Drop Shadow...', key: 'dropShadow' },
+      { id: 'innerShadow', label: '🌒 Inner Shadow...', key: 'innerShadow' },
+      { id: 'outerGlow', label: '✨ Outer Glow...', key: 'outerGlow' },
+      { id: 'innerGlow', label: '🌟 Inner Glow...', key: 'innerGlow' },
+      { id: 'bevelEmboss', label: '⛰ Bevel & Emboss...', key: 'bevelEmboss' },
+      { id: 'satin', label: '〰 Satin Contour...', key: 'satin' },
+      { id: 'patternOverlay', label: '🏁 Pattern Overlay...', key: 'patternOverlay' }
+    ];
+
+    for (const it of items) {
+      const enabled = it.key && Boolean(fx[it.key]?.enabled);
+      this.addDropdownMenuItem(menu, it.label, enabled ? 'ON' : '', enabled, () => {
+        this.openLayerStylesModal(it.id);
+      });
+    }
+
+    const d = document.createElement('div');
+    d.className = 'dropdown-divider';
+    menu.appendChild(d);
+
+    this.addDropdownMenuItem(menu, '📋 Copy Layer Style', '', false, () => {
+      this.session.dispatch('layer.copyStyle');
+      this.showToast('Copied Layer Style');
+    });
+    this.addDropdownMenuItem(menu, '📥 Paste Layer Style', '', false, () => {
+      this.session.dispatch('layer.pasteStyle');
+      this.showToast('Pasted Layer Style');
+    });
+    this.addDropdownMenuItem(menu, '🗑 Clear All Layer Styles', '', false, () => {
+      this.session.dispatch('layer.clearStyle');
+      this.showToast('Cleared Layer Styles');
+    });
+  }
+
+  populateBrushPopover() {
+    const pop = document.getElementById('popover-brush-settings');
+    pop.innerHTML = `
+      <div class="ctrl-field" style="margin-bottom:6px;">
+        <label>Brush Tip Preset</label>
+        <select class="pc-select" id="pop-brush-preset">
+          ${BRUSH_PRESETS.map((p) => `<option value="${p.id}" ${this.brush.presetId === p.id ? 'selected' : ''}>${p.name}</option>`).join('')}
+        </select>
+      </div>
+    `;
+    pop.querySelector('#pop-brush-preset').addEventListener('change', (e) => {
+      this.brush.applyPreset(e.target.value);
+      this.syncQuickBrushPill();
+      this.populateBrushPopover();
+      this.renderToolOptionsStrip();
+    });
+
+    const sliders = document.createElement('div');
+    sliders.className = 'slider-list';
+    this.appendRangeRow(sliders, 'Size (px)', 1, 160, 1, this.brush.size, 'px', (v) => {
+      this.brush.size = v;
+      this.syncQuickBrushPill();
+      this.renderToolOptionsStrip();
+    });
+    this.appendRangeRow(sliders, 'Opacity (%)', 1, 100, 1, this.brush.opacity, '%', (v) => {
+      this.brush.opacity = v;
+      this.syncQuickBrushPill();
+      this.renderToolOptionsStrip();
+    });
+    this.appendRangeRow(sliders, 'Hardness (%)', 0, 100, 1, this.brush.hardness, '%', (v) => {
+      this.brush.hardness = v;
+    });
+    this.appendRangeRow(sliders, 'Smoothing (%)', 0, 100, 1, this.brush.smoothing, '%', (v) => {
+      this.brush.smoothing = v;
+    });
+    pop.appendChild(sliders);
+  }
+
+  initToolGroupFlyouts() {
+    // 1. Paint Group Flyout
+    document.getElementById('tool-group-paint').addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleDropdown('flyout-paint', (menu) => {
+        menu.innerHTML = `<div class="dropdown-section-label">Paint &amp; Retouch Tools</div>`;
+        this.addDropdownMenuItem(menu, '🖌 Brush Tool', 'B', this.activeTool === 'brush', () => this.selectTool('brush'));
+        this.addDropdownMenuItem(menu, '⌫ Eraser Tool', 'E', this.activeTool === 'eraser', () => this.selectTool('eraser'));
+        this.addDropdownMenuItem(menu, '🩹 Spot Healing Brush', 'J', this.activeTool === 'heal', () => this.selectTool('heal'));
+        this.addDropdownMenuItem(menu, '☀️ Dodge (Lighten)', 'O', this.activeTool === 'tone' && this.toneMode === 'dodge', () => {
+          this.toneMode = 'dodge';
+          this.selectTool('tone');
+        });
+        this.addDropdownMenuItem(menu, '🌑 Burn (Darken)', 'O', this.activeTool === 'tone' && this.toneMode === 'burn', () => {
+          this.toneMode = 'burn';
+          this.selectTool('tone');
+        });
+      });
+    });
+
+    // 2. Select Group Flyout
+    document.getElementById('tool-group-select').addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleDropdown('flyout-select', (menu) => {
+        menu.innerHTML = `<div class="dropdown-section-label">Selection &amp; Subject AI</div>`;
+        this.addDropdownMenuItem(menu, '✨ Select ➔ Subject', 'Auto AI', false, () => {
+          this.selectTool('select');
+          this.session.dispatch('selection.subject');
+          this.showToast('Select ➔ Subject applied!');
+        });
+        this.addDropdownMenuItem(menu, '▭ Rectangular Marquee', 'M', this.activeTool === 'select' && this.selectMode === 'rect', () => {
+          this.selectMode = 'rect';
+          this.selectTool('select');
+        });
+        this.addDropdownMenuItem(menu, '◯ Elliptical Marquee', 'M', this.activeTool === 'select' && this.selectMode === 'ellipse', () => {
+          this.selectMode = 'ellipse';
+          this.selectTool('select');
+        });
+        this.addDropdownMenuItem(menu, '➰ Freehand Lasso', 'L', this.activeTool === 'select' && this.selectMode === 'lasso', () => {
+          this.selectMode = 'lasso';
+          this.selectTool('select');
+        });
+        this.addDropdownMenuItem(menu, '🪄 Magic Wand', 'W', this.activeTool === 'select' && this.selectMode === 'wand', () => {
+          this.selectMode = 'wand';
+          this.selectTool('select');
+        });
+      });
+    });
+
+    // 3. Crop, Perspective Crop & Slice Group Flyout
+    document.getElementById('tool-group-crop').addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleDropdown('flyout-crop', (menu) => {
+        menu.innerHTML = `<div class="dropdown-section-label">Crop &amp; Slice Tools</div>`;
+        this.addDropdownMenuItem(menu, ' Crop Tool', 'C', this.activeTool === 'crop', () => this.selectTool('crop'));
+        this.addDropdownMenuItem(menu, '⬠ Perspective Crop Tool', 'C', this.activeTool === 'perspectiveCrop', () => this.selectTool('perspectiveCrop'));
+        this.addDropdownMenuItem(menu, '⊞ Slice Tool', 'C', this.activeTool === 'slice', () => this.selectTool('slice'));
+        this.addDropdownMenuItem(menu, '↖ Slice Select Tool', 'C', this.activeTool === 'sliceSelect', () => this.selectTool('sliceSelect'));
+        const d = document.createElement('div');
+        d.className = 'dropdown-divider';
+        menu.appendChild(d);
+        this.addDropdownMenuItem(menu, '⊞ Divide Selected Slice...', '', false, () => {
+          this.selectTool('sliceSelect');
+          this.openDivideSliceModal();
+        });
+        this.addDropdownMenuItem(menu, '⬇ Export All Slices', 'PNG/JPG', false, () => this.exportAllSlices());
+      });
+    });
+
+    // 4. Type & Font Group Flyout
+    document.getElementById('tool-group-text').addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleDropdown('flyout-text', (menu) => {
+        menu.innerHTML = `<div class="dropdown-section-label">Type &amp; Custom Fonts</div>`;
+        this.addDropdownMenuItem(menu, 'T Horizontal Type Tool', 'T', this.activeTool === 'text', () => {
+          this.selectTool('text');
+          this.openTextEditorModal(this.session.doc?.activeLayer?.kind === 'text' ? this.session.doc.activeLayer : null);
+        });
+        this.addDropdownMenuItem(menu, '縦 Vertical Type Tool', 'T', false, () => {
+          this.selectTool('text');
+          const lyr = this.session.doc?.activeLayer?.kind === 'text' ? this.session.doc.activeLayer : null;
+          if (lyr && lyr.textData) lyr.textData.orientation = 'vertical';
+          this.openTextEditorModal(lyr);
+        });
+        this.addDropdownMenuItem(menu, '🔤 Import Downloaded Font...', '.ttf/.otf', false, () => {
+          document.getElementById('file-input-font').click();
+        });
+        this.addDropdownMenuItem(menu, 'fx Layer Blending & Styles...', 'fx', false, () => this.openLayerStylesModal());
+      });
+    });
+
+    // 5. Transform & Move Group Flyout
+    document.getElementById('tool-group-move').addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleDropdown('flyout-move', (menu) => {
+        menu.innerHTML = `<div class="dropdown-section-label">Move &amp; Transform</div>`;
+        this.addDropdownMenuItem(menu, '✥ Move & Free Transform', 'V', this.activeTool === 'move', () => this.selectTool('move'));
+        this.addDropdownMenuItem(menu, '↔ Flip Layer Horizontal', '', false, () => this.session.dispatch('transform.flipHorizontal'));
+        this.addDropdownMenuItem(menu, '↕ Flip Layer Vertical', '', false, () => this.session.dispatch('transform.flipVertical'));
+        this.addDropdownMenuItem(menu, '↻ Rotate Canvas 90° CW', '', false, () => {
+          this.session.dispatch('transform.rotate90CW');
+          this.fitCanvasToViewport();
+        });
+        this.addDropdownMenuItem(menu, '− Scale Layer 90%', '', false, () => this.scaleActiveLayer(0.9));
+        this.addDropdownMenuItem(menu, '+ Scale Layer 110%', '', false, () => this.scaleActiveLayer(1.1));
+      });
+    });
+
+    // 6. Fill, Gradient, Shapes & View Group Flyout
+    document.getElementById('tool-group-fill').addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleDropdown('flyout-fill', (menu) => {
+        menu.innerHTML = `<div class="dropdown-section-label">Fill, Shapes &amp; View</div>`;
+        this.addDropdownMenuItem(menu, '🪣 Paint Bucket Fill', 'G', this.activeTool === 'fill' && this.fillMode === 'bucket', () => {
+          this.fillMode = 'bucket';
+          this.selectTool('fill');
+        });
+        this.addDropdownMenuItem(menu, '🌈 Linear Gradient', 'G', this.activeTool === 'fill' && this.fillMode === 'gradient' && this.brush.gradientType === 'linear', () => {
+          this.fillMode = 'gradient';
+          this.brush.gradientType = 'linear';
+          this.selectTool('fill');
+        });
+        this.addDropdownMenuItem(menu, '◎ Radial Gradient', 'G', this.activeTool === 'fill' && this.fillMode === 'gradient' && this.brush.gradientType === 'radial', () => {
+          this.fillMode = 'gradient';
+          this.brush.gradientType = 'radial';
+          this.selectTool('fill');
+        });
+        this.addDropdownMenuItem(menu, '▢ Vector Shape Tool', 'U', this.activeTool === 'shape', () => this.selectTool('shape'));
+        const d = document.createElement('div');
+        d.className = 'dropdown-divider';
+        menu.appendChild(d);
+        this.addDropdownMenuItem(menu, '💧 Eyedropper Pixel Loupe', 'I', this.activeTool === 'eyedropper', () => this.selectTool('eyedropper'));
+        this.addDropdownMenuItem(menu, '✋ Hand Pan & Zoom Tool', 'H', this.activeTool === 'hand', () => this.selectTool('hand'));
+      });
+    });
+  }
+
   /**
-   * ==========================================================================
    * Downloaded Font Importer (.ttf, .otf, .woff, .woff2 via FontFace API)
-   * ==========================================================================
    */
   async handleImportFontFiles(fileList) {
     let lastLoadedFamily = null;
@@ -343,7 +743,7 @@ class PhotoCraftMobileApp {
       try {
         const buf = await file.arrayBuffer();
         const rawName = file.name.replace(/\.(ttf|otf|woff2?|ttc)$/i, '').replace(/[-_]+/g, ' ').trim();
-        const cleanFamily = `PCFont_${rawName.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        const cleanFamily = `PSFont_${rawName.replace(/[^a-zA-Z0-9]/g, '_')}`;
         const fontFace = new FontFace(cleanFamily, buf);
         await fontFace.load();
         document.fonts.add(fontFace);
@@ -357,17 +757,16 @@ class PhotoCraftMobileApp {
         }
         lastLoadedFamily = cleanFamily;
 
-        // Persist small/medium fonts in localStorage so they stay available across sessions
         if (buf.byteLength < 1500000) {
           const bytes = new Uint8Array(buf);
           let binary = '';
           for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
           const b64 = btoa(binary);
-          const saved = JSON.parse(localStorage.getItem('pc_imported_fonts') || '[]');
+          const saved = JSON.parse(localStorage.getItem('ps_imported_fonts') || '[]');
           if (!saved.some((s) => s.family === cleanFamily)) {
             saved.unshift({ family: cleanFamily, label: `★ ${rawName} (Imported)`, b64 });
             try {
-              localStorage.setItem('pc_imported_fonts', JSON.stringify(saved.slice(0, 5)));
+              localStorage.setItem('ps_imported_fonts', JSON.stringify(saved.slice(0, 5)));
             } catch (_) {}
           }
         }
@@ -386,7 +785,6 @@ class PhotoCraftMobileApp {
         this.session.notify('text.fontImported');
       }
       this.renderToolOptionsStrip();
-      // If Type modal font select is currently open in DOM, refresh it too
       const modalFontSel = document.getElementById('modal-type-font-select');
       if (modalFontSel) {
         modalFontSel.innerHTML = '';
@@ -399,13 +797,13 @@ class PhotoCraftMobileApp {
         }
         modalFontSel.dispatchEvent(new Event('change'));
       }
-      this.showToast(`Imported font! Ready in Type Tool`);
+      this.showToast('Imported Font! Ready in Type Tool');
     }
   }
 
   async restorePersistedFonts() {
     try {
-      const saved = JSON.parse(localStorage.getItem('pc_imported_fonts') || '[]');
+      const saved = JSON.parse(localStorage.getItem('ps_imported_fonts') || '[]');
       for (const item of saved) {
         const binary = atob(item.b64);
         const bytes = new Uint8Array(binary.length);
@@ -437,18 +835,19 @@ class PhotoCraftMobileApp {
       h: Math.round(doc.height * 0.84)
     };
     this.cropAngle = 0;
-    // Initialize Perspective Crop 4-corner quad with a slight trapezoid inset so perspective handles are obvious
     this.perspectiveQuad = [
-      { x: Math.round(doc.width * 0.14), y: Math.round(doc.height * 0.12) }, // TL
-      { x: Math.round(doc.width * 0.86), y: Math.round(doc.height * 0.16) }, // TR
-      { x: Math.round(doc.width * 0.90), y: Math.round(doc.height * 0.88) }, // BR
-      { x: Math.round(doc.width * 0.10), y: Math.round(doc.height * 0.86) }  // BL
+      { x: Math.round(doc.width * 0.14), y: Math.round(doc.height * 0.12) },
+      { x: Math.round(doc.width * 0.86), y: Math.round(doc.height * 0.16) },
+      { x: Math.round(doc.width * 0.90), y: Math.round(doc.height * 0.88) },
+      { x: Math.round(doc.width * 0.10), y: Math.round(doc.height * 0.86) }
     ];
   }
 
   resizeViewportCanvas() {
     const rect = this.workspaceEl.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
+    // Clamp DPR to max 2.0 for optimal mobile GPU fill-rate performance
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.viewportDpr = dpr;
     this.viewportCanvas.width = Math.max(1, Math.floor(rect.width * dpr));
     this.viewportCanvas.height = Math.max(1, Math.floor(rect.height * dpr));
   }
@@ -457,14 +856,15 @@ class PhotoCraftMobileApp {
     const doc = this.session.doc;
     if (!doc) return;
     const rect = this.workspaceEl.getBoundingClientRect();
-    const padX = 72;
-    const padY = 64;
+    const padX = 56;
+    const padY = 56;
     const availW = Math.max(120, rect.width - padX);
     const availH = Math.max(120, rect.height - padY);
     this.zoom = Math.min(availW / doc.width, availH / doc.height, 2.5);
     this.panX = (rect.width - doc.width * this.zoom) / 2;
     this.panY = (rect.height - doc.height * this.zoom) / 2;
     this.syncHeaderAndHUD();
+    this.requestRender();
   }
 
   screenToDoc(clientX, clientY) {
@@ -479,37 +879,14 @@ class PhotoCraftMobileApp {
     };
   }
 
-  bindVerticalQuickSlider(trackEl, onUpdate) {
-    let dragging = false;
-    const updateFromEvent = (e) => {
-      const rect = trackEl.getBoundingClientRect();
-      const ratio = 1 - Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-      onUpdate(ratio);
-    };
-    trackEl.addEventListener('pointerdown', (e) => {
-      dragging = true;
-      trackEl.setPointerCapture(e.pointerId);
-      updateFromEvent(e);
-    });
-    trackEl.addEventListener('pointermove', (e) => {
-      if (dragging) updateFromEvent(e);
-    });
-    trackEl.addEventListener('pointerup', () => {
-      dragging = false;
-    });
-  }
-
   syncColorSwatches() {
     document.getElementById('quick-swatch-fg').style.background = this.fgColor;
     document.getElementById('quick-swatch-bg').style.background = this.bgColor;
   }
 
   syncQuickBrushPill() {
-    const sizePct = Math.min(100, Math.max(4, (this.brush.size / 160) * 100));
-    document.getElementById('quick-size-fill').style.height = `${sizePct}%`;
-    document.getElementById('quick-size-val').textContent = `${this.brush.size}px`;
-    document.getElementById('quick-opacity-fill').style.height = `${this.brush.opacity}%`;
-    document.getElementById('quick-opacity-val').textContent = `${this.brush.opacity}%`;
+    const el = document.getElementById('quick-size-val');
+    if (el) el.textContent = `${this.brush.size}px`;
   }
 
   syncHeaderAndHUD() {
@@ -523,36 +900,39 @@ class PhotoCraftMobileApp {
     document.getElementById('btn-redo').disabled = !doc.canRedo();
     document.getElementById('hud-zoom-badge').textContent = `${Math.round(this.zoom * 100)}%`;
 
+    const storageBadge = document.getElementById('hud-storage-badge');
+    if (storageBadge) {
+      const locName = this.exportLocation === 'picker' ? 'Ask Dir' : this.exportLocation;
+      storageBadge.textContent = `📁 ${locName}`;
+    }
+
     const active = doc.activeLayer;
     if (active) {
       const maskSuffix = doc.editingMask ? ' [Mask]' : '';
       document.getElementById('hud-layer-name').textContent = `${active.name}${maskSuffix}`;
       document.getElementById('hud-layer-dot').style.background =
         doc.editingMask ? '#e8b046' : active.kind === 'adjustment' ? '#7cc0ff' : '#378ef0';
-      const hasFx = Algorithms.hasActiveLayerEffects(active.styles);
-      const fxBadge = document.getElementById('hud-fx-badge');
-      if (fxBadge) {
-        fxBadge.style.borderColor = hasFx ? '#e8b046' : 'rgba(255,255,255,0.12)';
-        fxBadge.style.color = hasFx ? '#ffd074' : '';
-      }
     }
   }
 
   selectTool(toolId) {
     this.activeTool = toolId;
-    document.querySelectorAll('.tool-item-btn').forEach((btn) => {
-      btn.classList.toggle('active', btn.dataset.tool === toolId);
+    const mapping = TOOL_TO_GROUP[toolId] || { group: 'paint', label: 'Brush' };
+
+    document.querySelectorAll('#tools-belt .tool-item-btn').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.group === mapping.group);
     });
+    const lblEl = document.getElementById(`lbl-group-${mapping.group}`);
+    if (lblEl) lblEl.textContent = mapping.label;
+
     const doc = this.session.doc;
     if (doc) {
       if (toolId === 'crop' && !this.cropBox) {
         this.resetCropBoxes(doc);
       } else if (toolId === 'perspectiveCrop') {
         if (!this.perspectiveQuad) this.resetCropBoxes(doc);
-        // Deselect active selection when starting Perspective Crop, per PhotoCraft #11975
         if (doc.hasSelection) doc.clearSelection();
       } else if ((toolId === 'slice' || toolId === 'sliceSelect') && doc.slices.length === 0) {
-        // Seed 2 starter slices so the user immediately sees how slices work and can drag/divide them!
         doc.addSlice({
           name: 'header_banner',
           x: Math.round(doc.width * 0.08),
@@ -562,7 +942,7 @@ class PhotoCraftMobileApp {
           origin: 'user'
         });
         doc.addSlice({
-          name: 'caption_card',
+          name: 'title_card',
           x: 70,
           y: 770,
           w: Math.min(760, doc.width - 140),
@@ -574,236 +954,259 @@ class PhotoCraftMobileApp {
     this.hapticTick();
     this.renderToolOptionsStrip();
     this.renderFloatingContextBar();
+    this.requestRender();
   }
 
   /* ==========================================================================
-   * Dynamic Tool Options Strip (above Tool Carousel)
+   * Dropdown-Based Tool Options Bar (No Horizontal Sliding!)
    * ========================================================================== */
   renderToolOptionsStrip() {
     const strip = document.getElementById('tool-options-strip');
     strip.innerHTML = '';
 
-    const addChip = (label, active, onClick) => {
+    const addSelectDropdown = (options, currentValue, onChange, title = '') => {
+      const sel = document.createElement('select');
+      sel.className = 'opt-dropdown-select';
+      if (title) sel.title = title;
+      for (const opt of options) {
+        const o = document.createElement('option');
+        o.value = opt.id;
+        o.textContent = opt.label;
+        if (String(opt.id) === String(currentValue)) o.selected = true;
+        sel.appendChild(o);
+      }
+      sel.addEventListener('change', () => onChange(sel.value));
+      strip.appendChild(sel);
+      return sel;
+    };
+
+    const addButton = (label, active, onClick) => {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = `opt-chip${active ? ' active' : ''}`;
       btn.textContent = label;
       btn.addEventListener('click', onClick);
       strip.appendChild(btn);
-    };
-
-    const addInlineSlider = (label, min, max, val, unit, onInput) => {
-      const wrap = document.createElement('label');
-      wrap.className = 'opt-slider-inline';
-      wrap.innerHTML = `<span>${label}</span><input type="range" min="${min}" max="${max}" value="${val}" /><strong>${val}${unit}</strong>`;
-      const input = wrap.querySelector('input');
-      const strong = wrap.querySelector('strong');
-      input.addEventListener('input', () => {
-        const v = Number(input.value);
-        strong.textContent = `${v}${unit}`;
-        onInput(v);
-      });
-      strip.appendChild(wrap);
+      return btn;
     };
 
     if (this.activeTool === 'brush' || this.activeTool === 'eraser' || this.activeTool === 'heal') {
-      for (const preset of BRUSH_PRESETS) {
-        addChip(preset.name, this.brush.presetId === preset.id, () => {
-          this.brush.applyPreset(preset.id);
+      // Preset Dropdown instead of horizontal scrolling pills
+      addSelectDropdown(
+        BRUSH_PRESETS.map((p) => ({ id: p.id, label: `Tip: ${p.name}` })),
+        this.brush.presetId,
+        (val) => {
+          this.brush.applyPreset(val);
           this.syncQuickBrushPill();
           this.renderToolOptionsStrip();
-        });
-      }
-      addInlineSlider('Hardness', 0, 100, this.brush.hardness, '%', (v) => {
-        this.brush.hardness = v;
-      });
-      addInlineSlider('Smooth', 0, 100, this.brush.smoothing, '%', (v) => {
-        this.brush.smoothing = v;
-      });
+        },
+        'Brush Tip Preset'
+      );
+
+      // Size Dropdown
+      addSelectDropdown(
+        [4, 8, 14, 24, 36, 52, 75, 110, 150].map((s) => ({ id: s, label: `Size: ${s}px` })),
+        [4, 8, 14, 24, 36, 52, 75, 110, 150].reduce((prev, curr) =>
+          Math.abs(curr - this.brush.size) < Math.abs(prev - this.brush.size) ? curr : prev
+        ),
+        (val) => {
+          this.brush.size = Number(val);
+          this.syncQuickBrushPill();
+        },
+        'Brush Size'
+      );
+
+      // Opacity Dropdown
+      addSelectDropdown(
+        [100, 85, 70, 50, 35, 20].map((o) => ({ id: o, label: `Opac: ${o}%` })),
+        [100, 85, 70, 50, 35, 20].reduce((prev, curr) =>
+          Math.abs(curr - this.brush.opacity) < Math.abs(prev - this.brush.opacity) ? curr : prev
+        ),
+        (val) => {
+          this.brush.opacity = Number(val);
+          this.syncQuickBrushPill();
+        },
+        'Brush Opacity'
+      );
     } else if (this.activeTool === 'select') {
-      addChip('✨ Select Subject', false, () => {
+      addSelectDropdown(
+        [
+          { id: 'rect', label: 'Mode: Rect Marquee' },
+          { id: 'ellipse', label: 'Mode: Ellipse Marquee' },
+          { id: 'lasso', label: 'Mode: Freehand Lasso' },
+          { id: 'wand', label: 'Mode: Magic Wand' }
+        ],
+        this.selectMode,
+        (val) => {
+          this.selectMode = val;
+          this.renderToolOptionsStrip();
+        }
+      );
+      addButton('✨ Select Subject', true, () => {
         this.session.dispatch('selection.subject');
         this.showToast('Select ➔ Subject applied!');
       });
-      addChip('Rect Marquee', this.selectMode === 'rect', () => {
-        this.selectMode = 'rect';
-        this.renderToolOptionsStrip();
+      addButton('✂️ Cutout', false, () => {
+        if (!this.session.doc?.hasSelection) this.session.dispatch('selection.subject');
+        this.session.dispatch('layer.viaCopy');
+        this.showToast('Extracted Subject to New Layer');
       });
-      addChip('Ellipse Marquee', this.selectMode === 'ellipse', () => {
-        this.selectMode = 'ellipse';
-        this.renderToolOptionsStrip();
-      });
-      addChip('Free Lasso', this.selectMode === 'lasso', () => {
-        this.selectMode = 'lasso';
-        this.renderToolOptionsStrip();
-      });
-      addChip('Magic Wand', this.selectMode === 'wand', () => {
-        this.selectMode = 'wand';
-        this.renderToolOptionsStrip();
-      });
-      if (this.selectMode === 'wand') {
-        addInlineSlider('Tolerance', 1, 160, this.wandTolerance, '', (v) => {
-          this.wandTolerance = v;
-        });
-      }
-    } else if (this.activeTool === 'crop' || this.activeTool === 'perspectiveCrop' || this.activeTool === 'slice' || this.activeTool === 'sliceSelect') {
-      // Crop Tool Family Switcher Pills (matching Photoshop's Crop tool group C)
-      addChip('Crop', this.activeTool === 'crop', () => this.selectTool('crop'));
-      addChip('Perspective Crop', this.activeTool === 'perspectiveCrop', () => this.selectTool('perspectiveCrop'));
-      addChip('Slice Tool', this.activeTool === 'slice', () => this.selectTool('slice'));
-      addChip('Slice Select', this.activeTool === 'sliceSelect', () => this.selectTool('sliceSelect'));
+    } else if (
+      this.activeTool === 'crop' ||
+      this.activeTool === 'perspectiveCrop' ||
+      this.activeTool === 'slice' ||
+      this.activeTool === 'sliceSelect'
+    ) {
+      // Crop / Slice Tool Mode Dropdown
+      addSelectDropdown(
+        [
+          { id: 'crop', label: 'Tool: Crop' },
+          { id: 'perspectiveCrop', label: 'Tool: Perspective Crop' },
+          { id: 'slice', label: 'Tool: Slice Draw' },
+          { id: 'sliceSelect', label: 'Tool: Slice Select' }
+        ],
+        this.activeTool,
+        (val) => this.selectTool(val)
+      );
 
       if (this.activeTool === 'crop') {
-        for (const r of [
-          { id: 'free', label: 'Free' },
-          { id: '1:1', label: '1:1' },
-          { id: '4:5', label: '4:5' },
-          { id: '16:9', label: '16:9' }
-        ]) {
-          addChip(r.label, this.cropAspect === r.id, () => {
-            this.cropAspect = r.id;
+        addSelectDropdown(
+          [
+            { id: 'free', label: 'Ratio: Freeform' },
+            { id: '1:1', label: 'Ratio: 1:1 Square' },
+            { id: '4:5', label: 'Ratio: 4:5 Portrait' },
+            { id: '16:9', label: 'Ratio: 16:9 Wide' },
+            { id: '9:16', label: 'Ratio: 9:16 Story' }
+          ],
+          this.cropAspect,
+          (val) => {
+            this.cropAspect = val;
             this.applyCropAspectConstraint();
-            this.renderToolOptionsStrip();
-          });
-        }
-        for (const g of [
-          { id: 'thirds', label: 'Rule of Thirds' },
-          { id: 'grid', label: 'Grid' },
-          { id: 'diagonal', label: 'Diagonal' },
-          { id: 'golden', label: 'Golden Ratio' }
-        ]) {
-          addChip(g.label, this.cropGridMode === g.id, () => {
-            this.cropGridMode = g.id;
-            this.renderToolOptionsStrip();
-          });
-        }
-        addInlineSlider('Straighten', -45, 45, this.cropAngle, '°', (v) => {
-          this.cropAngle = v;
-        });
-      } else if (this.activeTool === 'perspectiveCrop') {
-        addChip(this.perspectiveShowGrid ? '☑ Show Grid' : '☐ Show Grid', this.perspectiveShowGrid, () => {
-          this.perspectiveShowGrid = !this.perspectiveShowGrid;
-          this.renderToolOptionsStrip();
-        });
-        addChip('Front Image Bounds', false, () => {
-          const doc = this.session.doc;
-          if (!doc) return;
-          this.perspectiveQuad = [
-            { x: 0, y: 0 },
-            { x: doc.width, y: 0 },
-            { x: doc.width, y: doc.height },
-            { x: 0, y: doc.height }
-          ];
-          this.renderFloatingContextBar();
-        });
-        addChip('Reset Perspective Quad', false, () => {
-          this.resetCropBoxes();
-          this.renderFloatingContextBar();
-        });
-      } else {
-        // Slice & Slice Select tool options
-        addChip('+ Slice from Layer', false, () => {
-          this.session.dispatch('slice.fromLayer');
-          this.showToast('Created Slice from Active Layer');
-        });
-        addChip('⊞ Divide Slice...', false, () => this.openDivideSliceModal());
-        addChip('⚙ Slice Options...', false, () => this.openSliceOptionsModal());
-        addChip(
-          this.session.doc?.hideAutoSlices ? 'Show Auto Slices' : 'Hide Auto Slices',
-          Boolean(this.session.doc?.hideAutoSlices),
-          () => {
-            if (!this.session.doc) return;
-            this.session.doc.hideAutoSlices = !this.session.doc.hideAutoSlices;
-            this.renderToolOptionsStrip();
+            this.requestRender();
           }
         );
-        addChip('⬇ Export Slices', true, () => this.exportAllSlices());
-        addChip('Clear Slices', false, () => this.session.dispatch('slice.clearAll'));
+        addSelectDropdown(
+          [
+            { id: 'thirds', label: 'Grid: Rule of Thirds' },
+            { id: 'grid', label: 'Grid: Dense Grid' },
+            { id: 'diagonal', label: 'Grid: Diagonal' },
+            { id: 'golden', label: 'Grid: Golden Ratio' }
+          ],
+          this.cropGridMode,
+          (val) => {
+            this.cropGridMode = val;
+            this.requestRender();
+          }
+        );
+      } else if (this.activeTool === 'perspectiveCrop') {
+        addButton(this.perspectiveShowGrid ? '☑ Mesh Grid' : '☐ Mesh Grid', this.perspectiveShowGrid, () => {
+          this.perspectiveShowGrid = !this.perspectiveShowGrid;
+          this.renderToolOptionsStrip();
+          this.requestRender();
+        });
+        addButton('Reset Quad', false, () => {
+          this.resetCropBoxes();
+          this.requestRender();
+        });
+      } else {
+        addButton('+ From Layer', false, () => {
+          this.session.dispatch('slice.fromLayer');
+          this.showToast('Slice Created from Active Layer');
+        });
+        addButton('⊞ Divide...', false, () => this.openDivideSliceModal());
+        addButton('⚙ Options...', false, () => this.openSliceOptionsModal());
       }
     } else if (this.activeTool === 'text') {
-      addChip('📥 Import Font (.ttf/.otf/.woff)', true, () => {
-        document.getElementById('file-input-font').click();
-      });
-      addChip('+ Add Type Layer', false, () => this.openTextEditorModal(null));
-      if (this.session.doc?.activeLayer?.kind === 'text') {
-        addChip('✎ Edit Active Type', true, () => this.openTextEditorModal(this.session.doc.activeLayer));
-      }
-      addChip('fx Blending Options & Styles', false, () => this.openLayerStylesModal());
+      addSelectDropdown(
+        this.allFonts.map((f) => ({ id: f.family, label: f.label })),
+        this.activeFontFamily,
+        (val) => {
+          this.activeFontFamily = val;
+          const active = this.session.doc?.activeLayer;
+          if (active && active.kind === 'text' && active.textData) {
+            active.textData.fontFamily = val;
+            this.session.doc.rasterizeTextLayer(active);
+            this.session.notify('text.fontChanged');
+          }
+        }
+      );
+      addButton('🔤 +Font (.ttf/.otf)', true, () => document.getElementById('file-input-font').click());
+      addButton('✎ Edit Type', false, () =>
+        this.openTextEditorModal(this.session.doc?.activeLayer?.kind === 'text' ? this.session.doc.activeLayer : null)
+      );
     } else if (this.activeTool === 'move') {
-      addChip('Flip Horiz', false, () => this.session.dispatch('transform.flipHorizontal'));
-      addChip('Flip Vert', false, () => this.session.dispatch('transform.flipVertical'));
-      addChip('Rotate 90° CW', false, () => {
+      addButton('Flip H', false, () => this.session.dispatch('transform.flipHorizontal'));
+      addButton('Flip V', false, () => this.session.dispatch('transform.flipVertical'));
+      addButton('Rotate 90°', false, () => {
         this.session.dispatch('transform.rotate90CW');
         this.fitCanvasToViewport();
       });
-      addChip('Scale 90%', false, () => this.scaleActiveLayer(0.9));
-      addChip('Scale 110%', false, () => this.scaleActiveLayer(1.1));
-      addChip('fx Blending Options', false, () => this.openLayerStylesModal());
+      addButton('Scale 90%', false, () => this.scaleActiveLayer(0.9));
+      addButton('Scale 110%', false, () => this.scaleActiveLayer(1.1));
     } else if (this.activeTool === 'fill') {
-      addChip('Paint Bucket', this.fillMode === 'bucket', () => {
-        this.fillMode = 'bucket';
-        this.renderToolOptionsStrip();
-      });
-      addChip('Linear Gradient', this.fillMode === 'gradient' && this.brush.gradientType === 'linear', () => {
-        this.fillMode = 'gradient';
-        this.brush.gradientType = 'linear';
-        this.renderToolOptionsStrip();
-      });
-      addChip('Radial Gradient', this.fillMode === 'gradient' && this.brush.gradientType === 'radial', () => {
-        this.fillMode = 'gradient';
-        this.brush.gradientType = 'radial';
-        this.renderToolOptionsStrip();
-      });
-      if (this.fillMode === 'bucket') {
-        addInlineSlider('Tolerance', 1, 180, this.brush.bucketTolerance, '', (v) => {
-          this.brush.bucketTolerance = v;
-        });
-      }
-    } else if (this.activeTool === 'tone') {
-      addChip('Dodge (Lighten)', this.toneMode === 'dodge', () => {
-        this.toneMode = 'dodge';
-        this.renderToolOptionsStrip();
-      });
-      addChip('Burn (Darken)', this.toneMode === 'burn', () => {
-        this.toneMode = 'burn';
-        this.renderToolOptionsStrip();
-      });
-      addInlineSlider('Size', 4, 150, this.brush.size, 'px', (v) => {
-        this.brush.size = v;
-        this.syncQuickBrushPill();
-      });
-    } else if (this.activeTool === 'shape') {
-      for (const st of [
-        { id: 'rect', label: 'Rectangle' },
-        { id: 'ellipse', label: 'Ellipse' },
-        { id: 'polygon', label: 'Hexagon' },
-        { id: 'star', label: '5-Pt Star' }
-      ]) {
-        addChip(st.label, this.shapeMode === st.id, () => {
-          this.shapeMode = st.id;
+      addSelectDropdown(
+        [
+          { id: 'bucket', label: 'Fill: Paint Bucket' },
+          { id: 'linear', label: 'Fill: Linear Gradient' },
+          { id: 'radial', label: 'Fill: Radial Gradient' }
+        ],
+        this.fillMode === 'bucket' ? 'bucket' : this.brush.gradientType,
+        (val) => {
+          if (val === 'bucket') {
+            this.fillMode = 'bucket';
+          } else {
+            this.fillMode = 'gradient';
+            this.brush.gradientType = val;
+          }
           this.renderToolOptionsStrip();
-        });
-      }
-      addChip('+ Stamp Shape', false, () => {
+        }
+      );
+    } else if (this.activeTool === 'tone') {
+      addSelectDropdown(
+        [
+          { id: 'dodge', label: 'Mode: Dodge (Lighten)' },
+          { id: 'burn', label: 'Mode: Burn (Darken)' }
+        ],
+        this.toneMode,
+        (val) => {
+          this.toneMode = val;
+          this.selectTool('tone');
+        }
+      );
+    } else if (this.activeTool === 'shape') {
+      addSelectDropdown(
+        [
+          { id: 'rect', label: 'Shape: Rectangle' },
+          { id: 'ellipse', label: 'Shape: Ellipse' },
+          { id: 'polygon', label: 'Shape: Hexagon' },
+          { id: 'star', label: 'Shape: 5-Pt Star' }
+        ],
+        this.shapeMode,
+        (val) => {
+          this.shapeMode = val;
+        }
+      );
+      addButton('+ Add Shape Layer', true, () => {
         this.session.dispatch('shape.addLayer', {
           shapeType: this.shapeMode,
           fill: this.fgColor,
           stroke: this.bgColor,
           strokeWidth: 4
         });
-        this.showToast(`Added ${this.shapeMode} shape layer`);
       });
     } else if (this.activeTool === 'eyedropper') {
-      addChip('Touch & drag on canvas to sample pixel color with magnifier loupe', true, () => {});
+      addButton('Touch & drag on canvas to sample pixel color with magnifier loupe', true, () => {});
     } else if (this.activeTool === 'hand') {
-      addChip('Fit to Screen', false, () => this.fitCanvasToViewport());
-      addChip('100% Actual Pixels', false, () => {
+      addButton('Fit Screen', false, () => this.fitCanvasToViewport());
+      addButton('100% Zoom', false, () => {
         this.zoom = 1;
         this.syncHeaderAndHUD();
+        this.requestRender();
       });
-      addChip('200% Zoom', false, () => {
+      addButton('200% Zoom', false, () => {
         this.zoom = 2;
         this.syncHeaderAndHUD();
+        this.requestRender();
       });
     }
   }
@@ -848,7 +1251,7 @@ class PhotoCraftMobileApp {
   }
 
   /* ==========================================================================
-   * Floating Contextual Action Bar (Selection / Crop / Perspective Crop / Slice)
+   * Floating Contextual Action Bar
    * ========================================================================== */
   renderFloatingContextBar() {
     const bar = document.getElementById('floating-context-bar');
@@ -871,7 +1274,10 @@ class PhotoCraftMobileApp {
 
     if (this.activeTool === 'crop' && this.cropBox) {
       bar.hidden = false;
-      addBtn('Reset', '', () => this.resetCropBoxes(doc));
+      addBtn('Reset', '', () => {
+        this.resetCropBoxes(doc);
+        this.requestRender();
+      });
       addBtn('Cancel ✕', 'danger', () => this.selectTool('brush'));
       addBtn(`Apply Crop (${Math.round(this.cropBox.w)}×${Math.round(this.cropBox.h)}) ✓`, 'primary', () => {
         this.session.dispatch('crop.apply', { ...this.cropBox, angle: this.cropAngle });
@@ -886,14 +1292,17 @@ class PhotoCraftMobileApp {
     if (this.activeTool === 'perspectiveCrop' && this.perspectiveQuad) {
       bar.hidden = false;
       const valid = Algorithms.isConvexQuad(this.perspectiveQuad);
-      addBtn('Reset Quad', '', () => this.resetCropBoxes(doc));
+      addBtn('Reset Quad', '', () => {
+        this.resetCropBoxes(doc);
+        this.requestRender();
+      });
       addBtn('Cancel ✕', 'danger', () => this.selectTool('brush'));
       addBtn(
-        valid ? 'Apply Perspective Crop ✓' : 'Quad Invalid (Non-Convex)',
+        valid ? 'Apply Perspective Crop ✓' : 'Quad Invalid',
         valid ? 'primary' : 'danger',
         () => {
           if (!valid) {
-            this.showToast('Perspective quad must be convex (untangle corners)');
+            this.showToast('Perspective quad must be convex');
             return;
           }
           this.session.dispatch('image.perspectiveCrop', {
@@ -911,14 +1320,10 @@ class PhotoCraftMobileApp {
     if (this.activeTool === 'slice' || this.activeTool === 'sliceSelect') {
       bar.hidden = false;
       const sel = doc.selectedSlice;
-      addBtn('+ From Layer', '', () => {
-        this.session.dispatch('slice.fromLayer');
-        this.showToast('Slice Created from Active Layer');
-      });
       addBtn('Divide Slice...', '', () => this.openDivideSliceModal());
       if (sel) {
         addBtn('Slice Options...', '', () => this.openSliceOptionsModal());
-        addBtn('Delete Slice', 'danger', () => this.session.dispatch('slice.delete'));
+        addBtn('Delete', 'danger', () => this.session.dispatch('slice.delete'));
       }
       addBtn(`Export Slices (${doc.slices.length || 1}) ✓`, 'primary', () => this.exportAllSlices());
       return;
@@ -938,9 +1343,7 @@ class PhotoCraftMobileApp {
         this.session.dispatch('selection.feather', { radius: 6 });
         this.showToast('Selection Feathered');
       });
-      addBtn('Invert', '', () => this.session.dispatch('selection.invert'));
       addBtn('Deselect', '', () => this.session.dispatch('selection.deselect'));
-      addBtn('Clear', 'danger', () => this.session.dispatch('selection.clearPixels'));
       return;
     }
 
@@ -948,7 +1351,7 @@ class PhotoCraftMobileApp {
   }
 
   /* ==========================================================================
-   * Multi-Touch & Pointer Canvas Interactions
+   * Multi-Touch & Pointer Canvas Interactions (Optimized On-Demand Rendering)
    * ========================================================================== */
   bindCanvasEvents() {
     const canvas = this.viewportCanvas;
@@ -966,11 +1369,13 @@ class PhotoCraftMobileApp {
         this.panY = my - ((my - this.panY) / this.zoom) * newZoom;
         this.zoom = newZoom;
         this.syncHeaderAndHUD();
+        this.requestRender();
       },
       { passive: false }
     );
 
     canvas.addEventListener('pointerdown', (e) => {
+      this.closeAllDropdowns();
       canvas.setPointerCapture(e.pointerId);
       this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -986,6 +1391,7 @@ class PhotoCraftMobileApp {
           st.targetCanvas.getContext('2d').clearRect(0, 0, st.targetCanvas.width, st.targetCanvas.height);
           st.targetCanvas.getContext('2d').drawImage(st.baseCanvas, 0, 0);
           this.brush.activeStroke = null;
+          this.session.doc?.endFastInteraction();
         }
         this.toolDrag = null;
         document.getElementById('pixel-loupe').hidden = true;
@@ -1030,6 +1436,7 @@ class PhotoCraftMobileApp {
         this.panX = (center.x - rect.left) - docX * newZoom;
         this.panY = (center.y - rect.top) - docY * newZoom;
         this.syncHeaderAndHUD();
+        this.requestRender();
         return;
       }
 
@@ -1099,7 +1506,6 @@ class PhotoCraftMobileApp {
       return;
     }
 
-    // 1. Standard Crop Tool Interaction
     if (this.activeTool === 'crop' && this.cropBox) {
       const cb = this.cropBox;
       const handleRadius = 26 / this.zoom;
@@ -1119,7 +1525,6 @@ class PhotoCraftMobileApp {
       return;
     }
 
-    // 2. Perspective Crop Tool Interaction (4 independent corner pins or quad body move)
     if (this.activeTool === 'perspectiveCrop' && this.perspectiveQuad) {
       const handleRadius = 30 / this.zoom;
       let cornerIdx = -1;
@@ -1133,7 +1538,7 @@ class PhotoCraftMobileApp {
       }
       this.toolDrag = {
         type: 'perspectiveCrop',
-        cornerIdx, // 0..3 or -1 for whole-quad translate
+        cornerIdx,
         startX: pt.x,
         startY: pt.y,
         origQuad: this.perspectiveQuad.map((p) => ({ ...p }))
@@ -1141,7 +1546,6 @@ class PhotoCraftMobileApp {
       return;
     }
 
-    // 3. Slice Tool (draw new slice marquee)
     if (this.activeTool === 'slice') {
       this.toolDrag = {
         type: 'sliceDraw',
@@ -1153,7 +1557,6 @@ class PhotoCraftMobileApp {
       return;
     }
 
-    // 4. Slice Select Tool (select slice, move or resize corner)
     if (this.activeTool === 'sliceSelect') {
       const handleRadius = 24 / this.zoom;
       const sel = doc.selectedSlice;
@@ -1169,7 +1572,6 @@ class PhotoCraftMobileApp {
         return;
       }
 
-      // Hit test user slices top-down
       let hit = null;
       for (let i = doc.slices.length - 1; i >= 0; i--) {
         const s = doc.slices[i];
@@ -1181,6 +1583,7 @@ class PhotoCraftMobileApp {
       if (hit) {
         doc.selectedSliceId = hit.id;
         this.renderFloatingContextBar();
+        this.requestRender();
         this.toolDrag = {
           type: 'sliceEdit',
           mode: 'move',
@@ -1222,6 +1625,7 @@ class PhotoCraftMobileApp {
         this.showToast('Select a pixel, type, or shape layer to move');
         return;
       }
+      doc.beginFastInteraction();
       const targetCanvas = doc.editingMask && layer.maskCanvas ? layer.maskCanvas : layer.canvas;
       const snap = document.createElement('canvas');
       snap.width = doc.width;
@@ -1277,7 +1681,7 @@ class PhotoCraftMobileApp {
       return;
     }
 
-    // Painting tools: brush, eraser, heal, tone (dodge/burn)
+    // Painting tools: use fast layer sandwich cache during stroke!
     if (layer.kind === 'adjustment' && !doc.editingMask) {
       if (!layer.maskCanvas) {
         doc.addMaskToActiveLayer(false);
@@ -1286,6 +1690,7 @@ class PhotoCraftMobileApp {
       }
     }
 
+    doc.beginFastInteraction();
     const targetCanvas = doc.editingMask && layer.maskCanvas ? layer.maskCanvas : layer.canvas;
     const strokeTool = this.activeTool === 'tone' ? this.toneMode : this.activeTool;
     const pressure = e.pressure && e.pressure > 0 ? e.pressure : 1.0;
@@ -1301,7 +1706,8 @@ class PhotoCraftMobileApp {
       doc.editingMask,
       doc.hasSelection ? doc.selectionCanvas : null
     );
-    doc.compose();
+    doc.composeFast();
+    this.requestRender();
   }
 
   handleSinglePointerMove(e) {
@@ -1312,7 +1718,8 @@ class PhotoCraftMobileApp {
     if (this.brush.activeStroke) {
       const pressure = e.pressure && e.pressure > 0 ? e.pressure : 1.0;
       this.brush.moveStroke(pt.x, pt.y, pressure);
-      doc.compose();
+      doc.composeFast();
+      this.requestRender();
       return;
     }
 
@@ -1322,6 +1729,7 @@ class PhotoCraftMobileApp {
     if (drag.type === 'pan') {
       this.panX = drag.origPanX + (e.clientX - drag.startX);
       this.panY = drag.origPanY + (e.clientY - drag.startY);
+      this.requestRender();
       return;
     }
 
@@ -1336,7 +1744,8 @@ class PhotoCraftMobileApp {
       const ctx = drag.targetCanvas.getContext('2d');
       ctx.clearRect(0, 0, doc.width, doc.height);
       ctx.drawImage(drag.snapCanvas, drag.dx, drag.dy);
-      doc.compose();
+      doc.composeFast();
+      this.requestRender();
       return;
     }
 
@@ -1346,12 +1755,14 @@ class PhotoCraftMobileApp {
       if (drag.mode === 'lasso') {
         drag.points.push({ x: pt.x, y: pt.y });
       }
+      this.requestRender();
       return;
     }
 
     if (drag.type === 'gradient' || drag.type === 'shape' || drag.type === 'sliceDraw') {
       drag.currX = pt.x;
       drag.currY = pt.y;
+      this.requestRender();
       return;
     }
 
@@ -1370,6 +1781,7 @@ class PhotoCraftMobileApp {
         }));
       }
       this.renderFloatingContextBar();
+      this.requestRender();
       return;
     }
 
@@ -1384,6 +1796,7 @@ class PhotoCraftMobileApp {
         drag.slice.w = Math.max(16, Math.min(doc.width - or.x, Math.round(or.w + dx)));
         drag.slice.h = Math.max(16, Math.min(doc.height - or.y, Math.round(or.h + dy)));
       }
+      this.requestRender();
       return;
     }
 
@@ -1416,6 +1829,7 @@ class PhotoCraftMobileApp {
         this.cropBox.x = nx;
       }
       this.renderFloatingContextBar();
+      this.requestRender();
     }
   }
 
@@ -1429,6 +1843,7 @@ class PhotoCraftMobileApp {
       if (doc.activeLayer && !doc.editingMask && (doc.activeLayer.kind === 'text' || doc.activeLayer.kind === 'shape')) {
         doc.activeLayer.kind = 'raster';
       }
+      doc.endFastInteraction();
       doc.pushHistory(`${toolLabel} Stroke`);
       this.session.notify('stroke.end');
       return;
@@ -1444,13 +1859,16 @@ class PhotoCraftMobileApp {
       return;
     }
 
-    if (drag.type === 'move' && (Math.abs(drag.dx) > 1 || Math.abs(drag.dy) > 1)) {
-      const layer = doc.activeLayer;
-      if (layer?.textData && drag.origTextPos && !doc.editingMask) {
-        layer.textData.x = drag.origTextPos.x + drag.dx;
-        layer.textData.y = drag.origTextPos.y + drag.dy;
+    if (drag.type === 'move') {
+      doc.endFastInteraction();
+      if (Math.abs(drag.dx) > 1 || Math.abs(drag.dy) > 1) {
+        const layer = doc.activeLayer;
+        if (layer?.textData && drag.origTextPos && !doc.editingMask) {
+          layer.textData.x = drag.origTextPos.x + drag.dx;
+          layer.textData.y = drag.origTextPos.y + drag.dy;
+        }
+        doc.pushHistory('Move Layer');
       }
-      doc.pushHistory('Move Layer');
       this.session.notify('layer.moved');
       return;
     }
@@ -1477,6 +1895,8 @@ class PhotoCraftMobileApp {
       if (w >= 12 && h >= 12) {
         this.session.dispatch('slice.new', { x, y, w, h, origin: 'user' });
         this.showToast(`Created Slice #${doc.slices.length}`);
+      } else {
+        this.requestRender();
       }
       return;
     }
@@ -1484,6 +1904,7 @@ class PhotoCraftMobileApp {
     if (drag.type === 'sliceEdit') {
       doc.pushHistory('Modify Slice');
       this.renderFloatingContextBar();
+      this.requestRender();
       return;
     }
 
@@ -1553,47 +1974,29 @@ class PhotoCraftMobileApp {
   }
 
   /* ==========================================================================
-   * Canvas Render Loop (60fps Viewport Compositor + Overlays)
+   * Optimized On-Demand Viewport Render
    * ========================================================================== */
-  startAnimationLoop() {
-    const tick = () => {
-      this.antsOffset = (this.antsOffset + 0.35) % 16;
-      this.renderViewport();
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-  }
-
   renderViewport() {
     const doc = this.session.doc;
     if (!doc) return;
 
     const canvas = this.viewportCanvas;
     const ctx = this.viewportCtx;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = this.viewportDpr || Math.min(window.devicePixelRatio || 1, 2);
 
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = this.theme === 'pro-light' ? '#d0d0d0' : '#18191b';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.scale(dpr, dpr);
 
     ctx.save();
     ctx.translate(this.panX, this.panY);
     ctx.scale(this.zoom, this.zoom);
 
-    // 1. Document shadow & checkerboard
-    ctx.save();
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
-    ctx.shadowBlur = 24 / this.zoom;
-    ctx.shadowOffsetY = 6 / this.zoom;
-    ctx.fillStyle = '#222222';
-    ctx.fillRect(0, 0, doc.width, doc.height);
-    ctx.restore();
-
     this.drawCheckerboard(ctx, doc.width, doc.height);
 
-    // 2. Composite Document Image
-    ctx.imageSmoothingEnabled = this.zoom < 3.5;
+    ctx.imageSmoothingEnabled = this.zoom < 3.0;
     if (this.compareOriginal && doc.livePreview) {
       const savedPreview = doc.livePreview;
       doc.livePreview = null;
@@ -1605,32 +2008,25 @@ class PhotoCraftMobileApp {
       ctx.drawImage(doc.compositeCanvas, 0, 0);
     }
 
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
     ctx.lineWidth = 1 / this.zoom;
     ctx.strokeRect(0, 0, doc.width, doc.height);
 
-    // 3. Active Selection Marching Ants (including Select -> Subject silhouette!)
     this.drawSelectionOverlay(ctx, doc);
-
-    // 4. Live Drag Previews
     this.drawLiveToolDragOverlay(ctx);
 
-    // 5. Transform Bounding Box & Handles
     if (this.activeTool === 'move' && doc.activeLayer && doc.activeLayer.kind !== 'adjustment') {
       this.drawTransformHandles(ctx, doc);
     }
 
-    // 6. Standard Crop Overlay (with Straighten Angle & Grid Modes)
     if (this.activeTool === 'crop' && this.cropBox) {
       this.drawCropOverlay(ctx, doc);
     }
 
-    // 7. Perspective Crop 4-Corner Homography Quad & Mesh Overlay
     if (this.activeTool === 'perspectiveCrop' && this.perspectiveQuad) {
       this.drawPerspectiveCropOverlay(ctx, doc);
     }
 
-    // 8. Slice Tool & Slice Select Overlay (User Slices + Auto Slices + Numbered Badges)
     if (this.activeTool === 'slice' || this.activeTool === 'sliceSelect' || doc.slices.length > 0) {
       this.drawSlicesOverlay(ctx, doc);
     }
@@ -1696,7 +2092,6 @@ class PhotoCraftMobileApp {
         ctx.closePath();
       });
     } else if (out.type === 'mask') {
-      // Draw pixel-accurate animated marching ants along the Select -> Subject silhouette contour!
       if (out.contourPoints && out.contourPoints.length > 0) {
         const dotSize = Math.max(2, 2.6 / this.zoom);
         const phase = Math.floor(this.antsOffset / 2);
@@ -1707,26 +2102,6 @@ class PhotoCraftMobileApp {
           ctx.fillRect(pt.x - dotSize / 2, pt.y - dotSize / 2, dotSize, dotSize);
         }
         ctx.restore();
-      } else if (doc.selectionMask) {
-        let minX = doc.width, minY = doc.height, maxX = 0, maxY = 0;
-        const m = doc.selectionMask;
-        for (let y = 0; y < doc.height; y += 2) {
-          const row = y * doc.width;
-          for (let x = 0; x < doc.width; x += 2) {
-            if (m[row + x] > 64) {
-              if (x < minX) minX = x;
-              if (x > maxX) maxX = x;
-              if (y < minY) minY = y;
-              if (y > maxY) maxY = y;
-            }
-          }
-        }
-        if (maxX > minX && maxY > minY) {
-          strokeAnts(() => {
-            ctx.beginPath();
-            ctx.rect(minX, minY, maxX - minX, maxY - minY);
-          });
-        }
       }
     }
   }
@@ -1846,16 +2221,13 @@ class PhotoCraftMobileApp {
       ctx.moveTo(cb.x + cb.w, cb.y);
       ctx.lineTo(cb.x, cb.y + cb.h);
     } else if (this.cropGridMode === 'golden') {
-      const phi1 = 0.382;
-      const phi2 = 0.618;
-      for (const f of [phi1, phi2]) {
+      for (const f of [0.382, 0.618]) {
         ctx.moveTo(cb.x + cb.w * f, cb.y);
         ctx.lineTo(cb.x + cb.w * f, cb.y + cb.h);
         ctx.moveTo(cb.x, cb.y + cb.h * f);
         ctx.lineTo(cb.x + cb.w, cb.y + cb.h * f);
       }
     } else {
-      // Rule of Thirds
       for (const f of [1 / 3, 2 / 3]) {
         ctx.moveTo(cb.x + cb.w * f, cb.y);
         ctx.lineTo(cb.x + cb.w * f, cb.y + cb.h);
@@ -1878,10 +2250,6 @@ class PhotoCraftMobileApp {
     ctx.restore();
   }
 
-  /**
-   * Draw Perspective Crop 4-Corner Homography Quad & Subdivided Perspective Mesh
-   * (crates/ui-egui/src/tools/perspective_crop_ui.rs)
-   */
   drawPerspectiveCropOverlay(ctx, doc) {
     const q = this.perspectiveQuad;
     if (!q || q.length !== 4) return;
@@ -1889,7 +2257,6 @@ class PhotoCraftMobileApp {
     const strokeCol = isConvex ? '#38b5ff' : '#ec5b62';
 
     ctx.save();
-    // Darken outside the perspective quad using even-odd fill rule
     ctx.fillStyle = 'rgba(0, 0, 0, 0.52)';
     ctx.beginPath();
     ctx.rect(0, 0, doc.width, doc.height);
@@ -1900,7 +2267,6 @@ class PhotoCraftMobileApp {
     ctx.closePath();
     ctx.fill('evenodd');
 
-    // Perspective subdivision grid (interpolated across quad)
     if (this.perspectiveShowGrid) {
       ctx.strokeStyle = isConvex ? 'rgba(56, 181, 255, 0.55)' : 'rgba(236, 91, 98, 0.65)';
       ctx.lineWidth = 1.2 / this.zoom;
@@ -1919,7 +2285,6 @@ class PhotoCraftMobileApp {
         ctx.moveTo(leftPt.x, leftPt.y);
         ctx.lineTo(rightPt.x, rightPt.y);
       }
-      // Diagonals
       ctx.moveTo(q[0].x, q[0].y);
       ctx.lineTo(q[2].x, q[2].y);
       ctx.moveTo(q[1].x, q[1].y);
@@ -1927,7 +2292,6 @@ class PhotoCraftMobileApp {
       ctx.stroke();
     }
 
-    // Outer quad boundary
     ctx.strokeStyle = strokeCol;
     ctx.lineWidth = 2.2 / this.zoom;
     ctx.beginPath();
@@ -1938,7 +2302,6 @@ class PhotoCraftMobileApp {
     ctx.closePath();
     ctx.stroke();
 
-    // 4 Corner Pin Handles with Labels (TL, TR, BR, BL)
     const labels = ['TL', 'TR', 'BR', 'BL'];
     const r = 10 / this.zoom;
     ctx.font = `bold ${Math.round(10 / this.zoom)}px Inter, sans-serif`;
@@ -1961,9 +2324,6 @@ class PhotoCraftMobileApp {
     ctx.restore();
   }
 
-  /**
-   * Draw Slice Tool & Slice Select Overlay (crates/ui-egui/src/tools/slice_ui.rs)
-   */
   drawSlicesOverlay(ctx, doc) {
     const items = doc.resolveDisplaySlices();
     const isSliceMode = this.activeTool === 'slice' || this.activeTool === 'sliceSelect';
@@ -1983,7 +2343,6 @@ class PhotoCraftMobileApp {
       }
       ctx.strokeRect(s.x, s.y, s.w, s.h);
 
-      // Top-left numbered Slice Badge (`01`, `02`...)
       const badgeH = 18 / this.zoom;
       const badgeW = (isAuto ? 32 : 52) / this.zoom;
       ctx.fillStyle = isSelected
@@ -2001,7 +2360,6 @@ class PhotoCraftMobileApp {
       const tag = isAuto ? numStr : `${numStr} ⊞`;
       ctx.fillText(tag, s.x + 4 / this.zoom, s.y + badgeH / 2);
 
-      // If selected in Slice Select mode, draw corner resize handle
       if (isSelected && isSliceMode) {
         const hs = 11 / this.zoom;
         ctx.fillStyle = '#f59e0b';
@@ -2013,6 +2371,123 @@ class PhotoCraftMobileApp {
       }
     }
     ctx.restore();
+  }
+
+  /* ==========================================================================
+   * Storage Permission & Export Location Modal
+   * ========================================================================== */
+  requestDeviceStoragePermission(onDone) {
+    if (window.ProStudioAndroid && typeof window.ProStudioAndroid.requestStoragePermission === 'function') {
+      window.ProStudioAndroid.requestStoragePermission();
+      this.storagePermissionGranted = true;
+      localStorage.setItem('ps_storage_granted', 'true');
+      if (onDone) onDone(true);
+      return;
+    }
+    this.storagePermissionGranted = true;
+    localStorage.setItem('ps_storage_granted', 'true');
+    this.showToast('✓ Device Storage & Export Permission Granted');
+    if (onDone) onDone(true);
+  }
+
+  openStorageSettingsModal() {
+    this.openModal(
+      'Storage Permission & Export File Location',
+      (body) => {
+        const permCard = document.createElement('div');
+        permCard.className = 'curves-histogram-card';
+        permCard.style.borderColor = this.storagePermissionGranted ? 'rgba(56, 193, 114, 0.5)' : 'var(--pc-accent)';
+        permCard.innerHTML = `
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+            <div>
+              <strong id="perm-status-title" style="font-size:12.5px;color:${this.storagePermissionGranted ? '#4ade80' : 'var(--pc-text)'};display:block;">
+                ${this.storagePermissionGranted ? '✓ Storage Access Permission Granted' : '⚠️ Device Storage Permission'}
+              </strong>
+              <span style="font-size:11px;color:var(--pc-text-dim);">
+                Allows reading/writing PSDs, images &amp; custom export folders on device storage
+              </span>
+            </div>
+            <button type="button" class="pill-action-btn" id="btn-grant-storage-perm" style="flex-shrink:0;">
+              ${this.storagePermissionGranted ? 'Re-Verify' : 'Grant Permission'}
+            </button>
+          </div>
+        `;
+        permCard.querySelector('#btn-grant-storage-perm').addEventListener('click', () => {
+          this.requestDeviceStoragePermission(() => {
+            permCard.querySelector('#perm-status-title').textContent = '✓ Storage Access Permission Granted';
+            permCard.querySelector('#perm-status-title').style.color = '#4ade80';
+            permCard.querySelector('#btn-grant-storage-perm').textContent = 'Verified ✓';
+          });
+        });
+        body.appendChild(permCard);
+
+        // Export Location Dropdown
+        const locGroup = document.createElement('div');
+        locGroup.className = 'ctrl-field';
+        locGroup.innerHTML = `<label>Default Download / Export Folder Location</label>`;
+        const sel = document.createElement('select');
+        sel.className = 'pc-select';
+        for (const loc of EXPORT_LOCATIONS) {
+          const o = document.createElement('option');
+          o.value = loc.id;
+          o.textContent = loc.label;
+          if (this.exportLocation === loc.id) o.selected = true;
+          sel.appendChild(o);
+        }
+        locGroup.appendChild(sel);
+        body.appendChild(locGroup);
+
+        // Subfolder input
+        const subGroup = document.createElement('div');
+        subGroup.className = 'ctrl-field';
+        subGroup.innerHTML = `
+          <label>Custom Subfolder Name (inside selected directory)</label>
+          <input type="text" class="pc-input" id="inp-export-subfolder" value="${this.exportSubfolder}" placeholder="e.g. ProStudio or MyExports" />
+        `;
+        body.appendChild(subGroup);
+
+        // Live Resolved Path Preview
+        const pathBox = document.createElement('div');
+        pathBox.className = 'histogram-stats-row';
+        pathBox.style.gridTemplateColumns = '1fr';
+        body.appendChild(pathBox);
+
+        const updatePathPreview = () => {
+          const loc = EXPORT_LOCATIONS.find((l) => l.id === sel.value) || EXPORT_LOCATIONS[0];
+          const sub = subGroup.querySelector('#inp-export-subfolder').value.trim();
+          const fullPath =
+            loc.id === 'picker'
+              ? 'Interactive System Folder / File Picker on every Save'
+              : `${loc.pathHint}${sub ? '/' + sub : ''}/`;
+          pathBox.innerHTML = `<div>Active Export Path<strong>${fullPath}</strong></div>`;
+        };
+
+        sel.addEventListener('change', () => {
+          this.exportLocation = sel.value;
+          localStorage.setItem('ps_export_location', this.exportLocation);
+          this.syncHeaderAndHUD();
+          updatePathPreview();
+        });
+        subGroup.querySelector('#inp-export-subfolder').addEventListener('input', (e) => {
+          this.exportSubfolder = e.target.value.trim();
+          localStorage.setItem('ps_export_subfolder', this.exportSubfolder);
+          updatePathPreview();
+        });
+
+        updatePathPreview();
+      },
+      (footer) => {
+        const done = document.createElement('button');
+        done.type = 'button';
+        done.className = 'pill-action-btn';
+        done.textContent = 'Save Location Settings ✓';
+        done.addEventListener('click', () => {
+          this.closeModal();
+          this.showToast(`Export folder set to: ${this.exportLocation}`);
+        });
+        footer.appendChild(done);
+      }
+    );
   }
 
   /* ==========================================================================
@@ -2131,6 +2606,7 @@ class PhotoCraftMobileApp {
           s.format = format;
           doc.pushHistory('Edit Slice Options');
           this.closeModal();
+          this.requestRender();
           this.showToast(`Updated slice "${s.name}"`);
         });
         footer.appendChild(expOne);
@@ -2156,7 +2632,7 @@ class PhotoCraftMobileApp {
     const ext = s.format === 'jpeg' ? 'jpg' : 'png';
     c.toBlob((blob) => {
       if (blob) {
-        this.triggerDownloadOrAndroidShare(blob, `${s.name}.${ext}`, mime);
+        this.saveBlobToConfiguredLocation(blob, `${s.name}.${ext}`, mime);
       }
     }, mime, 0.92);
   }
@@ -2172,106 +2648,7 @@ class PhotoCraftMobileApp {
   }
 
   /* ==========================================================================
-   * Select Menu Modal (`✨ Select ▾` -> Select Subject, Cutout, Mask, etc.)
-   * ========================================================================== */
-  openSelectMenuModal() {
-    const doc = this.session.doc;
-    if (!doc) return;
-
-    this.openModal(
-      'Select Menu (Photoshop Selection & Subject AI)',
-      (body) => {
-        const items = [
-          {
-            title: '✨ Select ➔ Subject (Saliency & Backdrop Cut)',
-            sub: 'Automatically detects foreground subject & traces silhouette',
-            primary: true,
-            fn: () => {
-              this.session.dispatch('selection.subject');
-              this.showToast('Subject Selected!');
-            }
-          },
-          {
-            title: '✂️ Layer via Copy — Cutout Subject (⌘J)',
-            sub: 'Extracts active selection / subject onto a new transparent layer',
-            fn: () => {
-              if (!doc.hasSelection) this.session.dispatch('selection.subject');
-              this.session.dispatch('layer.viaCopy');
-              this.showToast('Extracted Subject Cutout to New Layer!');
-            }
-          },
-          {
-            title: '🎭 Convert Selection to Layer Mask',
-            sub: 'Masks active layer using current subject or marquee selection',
-            fn: () => {
-              if (!doc.hasSelection) this.session.dispatch('selection.subject');
-              this.session.dispatch('layer.addMask', { fromSelection: true });
-              this.showToast('Created Layer Mask from Selection');
-            }
-          },
-          {
-            title: 'Select All (⌘A)',
-            sub: `${doc.width} × ${doc.height} px`,
-            fn: () => this.session.dispatch('selection.all')
-          },
-          {
-            title: 'Invert Selection (⇧⌘I)',
-            sub: 'Swap selected foreground and background',
-            fn: () => this.session.dispatch('selection.invert')
-          },
-          {
-            title: 'Feather Selection (8 px)',
-            sub: 'Soften selection edge transitions',
-            fn: () => {
-              this.session.dispatch('selection.feather', { radius: 8 });
-              this.showToast('Selection Feathered (8 px)');
-            }
-          },
-          {
-            title: 'Deselect (⌘D)',
-            sub: 'Clear active marching ants selection',
-            fn: () => this.session.dispatch('selection.deselect')
-          }
-        ];
-
-        const list = document.createElement('div');
-        list.className = 'cmd-list';
-        list.style.maxHeight = '340px';
-        for (const it of items) {
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'cmd-item';
-          if (it.primary) {
-            btn.style.background = 'var(--pc-accent-soft)';
-            btn.style.borderColor = 'var(--pc-accent)';
-          }
-          btn.innerHTML = `
-            <div style="display:flex;flex-direction:column;gap:2px;">
-              <span class="cmd-item-title">${it.title}</span>
-              <span class="cmd-item-id">${it.sub}</span>
-            </div>
-          `;
-          btn.addEventListener('click', () => {
-            this.closeModal();
-            it.fn();
-          });
-          list.appendChild(btn);
-        }
-        body.appendChild(list);
-      },
-      (footer) => {
-        const close = document.createElement('button');
-        close.type = 'button';
-        close.className = 'pill-action-btn secondary';
-        close.textContent = 'Close';
-        close.addEventListener('click', () => this.closeModal());
-        footer.appendChild(close);
-      }
-    );
-  }
-
-  /* ==========================================================================
-   * Slide-Up Mobile Bottom Sheets (Layers, Adjustments, Filters, PSD & App)
+   * Bottom Panels (Layers, Adjustments, Filters, Storage/PSD)
    * ========================================================================== */
   toggleSheet(sheetId) {
     if (this.activeSheet === sheetId) {
@@ -2281,6 +2658,7 @@ class PhotoCraftMobileApp {
     if (this.session.doc?.livePreview && sheetId !== 'filters') {
       this.session.doc.livePreview = null;
       this.session.doc.compose();
+      this.requestRender();
     }
     this.activeSheet = sheetId;
     document.getElementById('bottom-sheet').classList.add('open');
@@ -2296,6 +2674,7 @@ class PhotoCraftMobileApp {
     if (this.session.doc?.livePreview) {
       this.session.doc.livePreview = null;
       this.session.doc.compose();
+      this.requestRender();
     }
     this.activeSheet = 'none';
     document.getElementById('bottom-sheet').classList.remove('open');
@@ -2312,9 +2691,6 @@ class PhotoCraftMobileApp {
     else if (this.activeSheet === 'project') this.renderProjectSheet();
   }
 
-  /* --------------------------------------------------------------------------
-   * 1. LAYERS SHEET
-   * -------------------------------------------------------------------------- */
   renderLayersSheet() {
     const doc = this.session.doc;
     if (!doc) return;
@@ -2326,12 +2702,33 @@ class PhotoCraftMobileApp {
     const headerActions = document.getElementById('sheet-header-actions');
     headerActions.innerHTML = '';
 
-    const fxTopBtn = document.createElement('button');
-    fxTopBtn.type = 'button';
-    fxTopBtn.className = 'pill-action-btn secondary';
-    fxTopBtn.textContent = 'fx Blending Options';
-    fxTopBtn.addEventListener('click', () => this.openLayerStylesModal());
-    headerActions.appendChild(fxTopBtn);
+    // Layer Actions Dropdown instead of crowded horizontal strip
+    const actSel = document.createElement('select');
+    actSel.className = 'opt-dropdown-select';
+    actSel.innerHTML = `
+      <option value="">Layer Actions ▾</option>
+      <option value="fx">fx Blending &amp; Styles...</option>
+      <option value="dup">Duplicate Layer</option>
+      <option value="mask">+ Add Layer Mask</option>
+      <option value="invMask">Invert Layer Mask</option>
+      <option value="clip">Toggle Clipping Mask</option>
+      <option value="merge">Merge Down</option>
+      <option value="flatten">Flatten Image</option>
+      <option value="del">Delete Layer</option>
+    `;
+    actSel.addEventListener('change', () => {
+      const v = actSel.value;
+      actSel.value = '';
+      if (v === 'fx') this.openLayerStylesModal();
+      else if (v === 'dup') this.session.dispatch('layer.duplicate');
+      else if (v === 'mask') this.session.dispatch('layer.addMask', { fromSelection: true });
+      else if (v === 'invMask') this.session.dispatch('layer.invertMask');
+      else if (v === 'clip') this.session.dispatch('layer.toggleClipping');
+      else if (v === 'merge') this.session.dispatch('layer.mergeDown');
+      else if (v === 'flatten') this.session.dispatch('layer.flattenImage');
+      else if (v === 'del') this.session.dispatch('layer.delete');
+    });
+    headerActions.appendChild(actSel);
 
     const addLayerBtn = document.createElement('button');
     addLayerBtn.type = 'button';
@@ -2377,6 +2774,7 @@ class PhotoCraftMobileApp {
         opacField.querySelector('#lbl-lyr-opac').textContent = `${v}%`;
         active.opacity = v / 100;
         doc.compose();
+        this.requestRender();
       });
       opacField.querySelector('input').addEventListener('change', () => {
         doc.pushHistory('Layer Opacity');
@@ -2393,33 +2791,12 @@ class PhotoCraftMobileApp {
         fillField.querySelector('#lbl-lyr-fill').textContent = `${v}%`;
         active.fill = v / 100;
         doc.compose();
+        this.requestRender();
       });
       ctrlGrid.appendChild(fillField);
 
       body.appendChild(ctrlGrid);
     }
-
-    const toolbar = document.createElement('div');
-    toolbar.className = 'layer-action-toolbar';
-    const actions = [
-      { label: 'fx Blending & Styles', fn: () => this.openLayerStylesModal() },
-      { label: 'Duplicate', fn: () => this.session.dispatch('layer.duplicate') },
-      { label: '+ Mask', fn: () => this.session.dispatch('layer.addMask', { fromSelection: true }) },
-      { label: 'Invert Mask', fn: () => this.session.dispatch('layer.invertMask') },
-      { label: 'Clipping Mask', fn: () => this.session.dispatch('layer.toggleClipping') },
-      { label: 'Merge Down', fn: () => this.session.dispatch('layer.mergeDown') },
-      { label: 'Flatten', fn: () => this.session.dispatch('layer.flattenImage') },
-      { label: 'Delete', fn: () => this.session.dispatch('layer.delete') }
-    ];
-    for (const act of actions) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'opt-chip';
-      b.textContent = act.label;
-      b.addEventListener('click', act.fn);
-      toolbar.appendChild(b);
-    }
-    body.appendChild(toolbar);
 
     const list = document.createElement('div');
     list.className = 'layer-list';
@@ -2469,7 +2846,7 @@ class PhotoCraftMobileApp {
       if (lyr.maskCanvas) {
         const mThumb = document.createElement('div');
         mThumb.className = `layer-mask-thumb${isSelected && doc.editingMask ? ' active-target' : ''}`;
-        mThumb.title = 'Tap to paint on Layer Mask (White=Reveal, Black=Hide)';
+        mThumb.title = 'Tap to paint on Layer Mask';
         const mc = document.createElement('canvas');
         mc.width = 36;
         mc.height = 48;
@@ -2568,39 +2945,39 @@ class PhotoCraftMobileApp {
     body.appendChild(list);
   }
 
-  /* --------------------------------------------------------------------------
-   * 2. ADJUSTMENTS, CURVES & HISTOGRAM SHEET
-   * -------------------------------------------------------------------------- */
   renderAdjustmentsSheet() {
     const doc = this.session.doc;
     if (!doc) return;
 
     document.getElementById('sheet-title').textContent = 'Adjustments & Scopes';
-    document.getElementById('sheet-subtitle').textContent = 'Live Adjustment Layers or Direct Pixel Edits';
-    document.getElementById('sheet-header-actions').innerHTML = '';
+    document.getElementById('sheet-subtitle').textContent = 'Non-destructive adjustment layers';
 
-    const body = document.getElementById('sheet-body');
-    body.innerHTML = '';
+    const headerActions = document.getElementById('sheet-header-actions');
+    headerActions.innerHTML = '';
 
-    const tabs = document.createElement('div');
-    tabs.className = 'sub-tabs';
+    // Dropdown selector for Adjustment mode
+    const modeSel = document.createElement('select');
+    modeSel.className = 'opt-dropdown-select';
     for (const t of [
       { id: 'curves', label: 'Curves + Histogram' },
       { id: 'levels', label: 'Levels + Stats' },
       { id: 'color', label: 'Vibrance & Hue/Sat' },
       { id: 'tone', label: 'Brightness & Filters' }
     ]) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = `sub-tab-btn${this.activeAdjustTab === t.id ? ' active' : ''}`;
-      b.textContent = t.label;
-      b.addEventListener('click', () => {
-        this.activeAdjustTab = t.id;
-        this.renderAdjustmentsSheet();
-      });
-      tabs.appendChild(b);
+      const o = document.createElement('option');
+      o.value = t.id;
+      o.textContent = t.label;
+      if (this.activeAdjustTab === t.id) o.selected = true;
+      modeSel.appendChild(o);
     }
-    body.appendChild(tabs);
+    modeSel.addEventListener('change', () => {
+      this.activeAdjustTab = modeSel.value;
+      this.renderAdjustmentsSheet();
+    });
+    headerActions.appendChild(modeSel);
+
+    const body = document.getElementById('sheet-body');
+    body.innerHTML = '';
 
     const compData = doc.compositeCanvas.getContext('2d').getImageData(0, 0, doc.width, doc.height);
     const hist = Algorithms.computeHistogram(compData);
@@ -2614,26 +2991,25 @@ class PhotoCraftMobileApp {
       chRow.style.justifyContent = 'space-between';
       chRow.style.alignItems = 'center';
 
-      const chBtns = document.createElement('div');
-      chBtns.style.display = 'flex';
-      chBtns.style.gap = '5px';
+      const chSel = document.createElement('select');
+      chSel.className = 'opt-dropdown-select';
       for (const ch of [
-        { id: 'rgb', label: 'RGB' },
-        { id: 'r', label: 'Red' },
-        { id: 'g', label: 'Green' },
-        { id: 'b', label: 'Blue' }
+        { id: 'rgb', label: 'Channel: Master RGB' },
+        { id: 'r', label: 'Channel: Red' },
+        { id: 'g', label: 'Channel: Green' },
+        { id: 'b', label: 'Channel: Blue' }
       ]) {
-        const cb = document.createElement('button');
-        cb.type = 'button';
-        cb.className = `opt-chip${this.activeCurveChannel === ch.id ? ' active' : ''}`;
-        cb.textContent = ch.label;
-        cb.addEventListener('click', () => {
-          this.activeCurveChannel = ch.id;
-          this.renderAdjustmentsSheet();
-        });
-        chBtns.appendChild(cb);
+        const o = document.createElement('option');
+        o.value = ch.id;
+        o.textContent = ch.label;
+        if (this.activeCurveChannel === ch.id) o.selected = true;
+        chSel.appendChild(o);
       }
-      chRow.appendChild(chBtns);
+      chSel.addEventListener('change', () => {
+        this.activeCurveChannel = chSel.value;
+        this.renderAdjustmentsSheet();
+      });
+      chRow.appendChild(chSel);
 
       const resetBtn = document.createElement('button');
       resetBtn.type = 'button';
@@ -3046,6 +3422,7 @@ class PhotoCraftMobileApp {
       if (active && active.kind === 'adjustment' && active.adjustment?.type === 'curves') {
         active.adjustment.params = structuredClone(this.curvePoints);
         this.session.doc.compose();
+        this.requestRender();
       }
     });
 
@@ -3105,31 +3482,52 @@ class PhotoCraftMobileApp {
     }
   }
 
-  /* --------------------------------------------------------------------------
-   * 3. FILTERS SHEET
-   * -------------------------------------------------------------------------- */
   renderFiltersSheet() {
     const doc = this.session.doc;
     if (!doc) return;
 
     document.getElementById('sheet-title').textContent = 'Filter Gallery';
-    document.getElementById('sheet-subtitle').textContent = 'Live preview on canvas before committing';
+    document.getElementById('sheet-subtitle').textContent = 'Live preview on canvas';
 
     const headerActions = document.getElementById('sheet-header-actions');
     headerActions.innerHTML = '';
 
+    // Filter Selector Dropdown in header for fast selection
+    const fSel = document.createElement('select');
+    fSel.className = 'opt-dropdown-select';
+    for (const f of FILTER_CATALOG) {
+      const o = document.createElement('option');
+      o.value = f.id;
+      o.textContent = f.name;
+      if (this.activeFilterId === f.id) o.selected = true;
+      fSel.appendChild(o);
+    }
+    fSel.addEventListener('change', () => {
+      const spec = FILTER_CATALOG.find((item) => item.id === fSel.value);
+      if (spec) {
+        this.activeFilterId = spec.id;
+        this.activeFilterParams = structuredClone(spec.defaults);
+        this.updateLiveFilterPreview();
+        this.renderFiltersSheet();
+      }
+    });
+    headerActions.appendChild(fSel);
+
     const compareBtn = document.createElement('button');
     compareBtn.type = 'button';
     compareBtn.className = `opt-chip${this.compareOriginal ? ' active' : ''}`;
-    compareBtn.textContent = this.compareOriginal ? 'Showing Original' : 'Hold Compare';
+    compareBtn.textContent = 'Hold Compare';
     compareBtn.addEventListener('pointerdown', () => {
       this.compareOriginal = true;
+      this.requestRender();
     });
     compareBtn.addEventListener('pointerup', () => {
       this.compareOriginal = false;
+      this.requestRender();
     });
     compareBtn.addEventListener('pointerleave', () => {
       this.compareOriginal = false;
+      this.requestRender();
     });
     headerActions.appendChild(compareBtn);
 
@@ -3205,6 +3603,7 @@ class PhotoCraftMobileApp {
       cancelBtn.addEventListener('click', () => {
         doc.livePreview = null;
         doc.compose();
+        this.requestRender();
       });
 
       actRow.appendChild(applyBtn);
@@ -3225,22 +3624,47 @@ class PhotoCraftMobileApp {
       params: structuredClone(this.activeFilterParams)
     };
     doc.compose();
+    this.requestRender();
   }
 
   /* --------------------------------------------------------------------------
-   * 4. PROJECT / PSD I/O, FONTS, HISTORY, THEMES & ANDROID APK SHEET
+   * 4. STORAGE PERMISSION, EXPORT LOCATION, PSD I/O & APK SHEET
    * -------------------------------------------------------------------------- */
   renderProjectSheet() {
     const doc = this.session.doc;
     if (!doc) return;
 
-    document.getElementById('sheet-title').textContent = 'PSD, Fonts, History & APK';
-    document.getElementById('sheet-subtitle').textContent = 'Open/Save PSDs, import .ttf/.otf fonts & install APK';
+    document.getElementById('sheet-title').textContent = 'Storage, PSD, Fonts & APK';
+    document.getElementById('sheet-subtitle').textContent = 'Configure storage permissions, export folder & files';
     document.getElementById('sheet-header-actions').innerHTML = '';
 
     const body = document.getElementById('sheet-body');
     body.innerHTML = '';
 
+    // 1. Storage Permission & Export Folder Card
+    const storageCard = document.createElement('div');
+    storageCard.className = 'curves-histogram-card';
+    storageCard.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+        <div>
+          <strong style="font-size:12.5px;color:${this.storagePermissionGranted ? '#4ade80' : 'var(--pc-text)'};display:block;">
+            ${this.storagePermissionGranted ? '✓ Device Storage Permission Active' : '📁 Device Storage & Export Folder'}
+          </strong>
+          <span style="font-size:11px;color:var(--pc-text-dim);">
+            Target: ${EXPORT_LOCATIONS.find((l) => l.id === this.exportLocation)?.label || 'Downloads'}
+          </span>
+        </div>
+        <button type="button" class="pill-action-btn" id="sheet-btn-storage-cfg">
+          Configure Folder...
+        </button>
+      </div>
+    `;
+    storageCard.querySelector('#sheet-btn-storage-cfg').addEventListener('click', () => {
+      this.openStorageSettingsModal();
+    });
+    body.appendChild(storageCard);
+
+    // 2. File Import / Open / Font / Export Buttons
     const ioRow = document.createElement('div');
     ioRow.style.display = 'grid';
     ioRow.style.gridTemplateColumns = '1fr 1fr';
@@ -3275,7 +3699,7 @@ class PhotoCraftMobileApp {
     btnExport.className = 'pill-action-btn';
     btnExport.style.height = '38px';
     btnExport.style.justifyContent = 'center';
-    btnExport.textContent = '💾 Export PSD / PNG / JPG';
+    btnExport.textContent = '💾 Export & Choose Folder';
     btnExport.addEventListener('click', () => this.openExportModal());
 
     ioRow.appendChild(btnOpen);
@@ -3284,25 +3708,7 @@ class PhotoCraftMobileApp {
     ioRow.appendChild(btnExport);
     body.appendChild(ioRow);
 
-    if (this.importedFonts.length > 0) {
-      const fBox = document.createElement('div');
-      fBox.className = 'curves-histogram-card';
-      fBox.innerHTML = `<strong style="font-size:11.5px;color:var(--pc-accent);">LOADED CUSTOM FONTS (${this.importedFonts.length})</strong>`;
-      const fTags = document.createElement('div');
-      fTags.style.display = 'flex';
-      fTags.style.flexWrap = 'wrap';
-      fTags.style.gap = '6px';
-      for (const f of this.importedFonts) {
-        const chip = document.createElement('span');
-        chip.className = 'opt-chip active';
-        chip.style.fontFamily = f.family;
-        chip.textContent = f.label;
-        fTags.appendChild(chip);
-      }
-      fBox.appendChild(fTags);
-      body.appendChild(fBox);
-    }
-
+    // 3. Native Android APK Download Card
     const apkCard = document.createElement('div');
     apkCard.className = 'curves-histogram-card';
     apkCard.style.background = 'rgba(35, 134, 54, 0.14)';
@@ -3311,107 +3717,67 @@ class PhotoCraftMobileApp {
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
         <div>
           <strong style="font-size:13px;color:var(--pc-text);display:block;">Native Android App (.APK)</strong>
-          <span style="font-size:11px;color:var(--pc-text-dim);">Installable Android package built from storytold/photocraft</span>
+          <span style="font-size:11px;color:var(--pc-text-dim);">Signed installable package with Storage Permission &amp; Folder Picker</span>
         </div>
-        <a href="photocraft-mobile.apk" download="photocraft-mobile.apk" class="apk-download-btn" style="flex-shrink:0;">
+        <a href="prostudio-mobile.apk" download="prostudio-mobile.apk" class="apk-download-btn" style="flex-shrink:0;">
           Download APK
         </a>
       </div>
     `;
     body.appendChild(apkCard);
 
-    const scLabel = document.createElement('div');
-    scLabel.style.fontSize = '11.5px';
-    scLabel.style.fontWeight = '600';
-    scLabel.style.color = 'var(--pc-text-dim)';
-    scLabel.textContent = 'PHOTOCRAFT MULTI-LAYER SHOWCASE DOCUMENTS';
-    body.appendChild(scLabel);
+    // 4. Theme Dropdown & History Dropdown
+    const row2 = document.createElement('div');
+    row2.style.display = 'grid';
+    row2.style.gridTemplateColumns = '1fr 1fr';
+    row2.style.gap = '8px';
 
-    const scGrid = document.createElement('div');
-    scGrid.className = 'showcase-list';
-
-    const cardWave = document.createElement('div');
-    cardWave.className = 'showcase-card';
-    cardWave.innerHTML = `<strong>The Great Wave.psd</strong><span>6 layers · Curves, Vibrance, Drop Shadow, Live Type</span>`;
-    cardWave.addEventListener('click', () => {
-      this.loadDocument(SampleProjects.createGreatWaveShowcase());
-      this.closeSheet();
-      this.showToast('Loaded Great-Wave-Kanagawa.psd');
-    });
-
-    const cardEarth = document.createElement('div');
-    cardEarth.className = 'showcase-card';
-    cardEarth.innerHTML = `<strong>Apollo 8 Earthrise.psd</strong><span>4 layers · Outer Glow, Stroke fx &amp; Starfield</span>`;
-    cardEarth.addEventListener('click', () => {
-      this.loadDocument(SampleProjects.createEarthriseShowcase());
-      this.closeSheet();
-      this.showToast('Loaded Apollo8-Earthrise-Styles.psd');
-    });
-
-    scGrid.appendChild(cardWave);
-    scGrid.appendChild(cardEarth);
-    body.appendChild(scGrid);
-
-    const thLabel = document.createElement('div');
-    thLabel.style.fontSize = '11.5px';
-    thLabel.style.fontWeight = '600';
-    thLabel.style.color = 'var(--pc-text-dim)';
-    thLabel.textContent = 'INTERFACE APPEARANCE THEME';
-    body.appendChild(thLabel);
-
-    const thRow = document.createElement('div');
-    thRow.style.display = 'flex';
-    thRow.style.gap = '6px';
-    thRow.style.flexWrap = 'wrap';
+    const thField = document.createElement('div');
+    thField.className = 'ctrl-field';
+    thField.innerHTML = `<label>Interface Theme</label>`;
+    const thSel = document.createElement('select');
+    thSel.className = 'pc-select';
     for (const th of [
       { id: 'pro-dark', label: 'Pro (Dark)' },
       { id: 'pro-medium', label: 'Pro (Medium Gray)' },
-      { id: 'breeze-dark', label: 'Breeze Dark' },
+      { id: 'breeze-dark', label: 'Slate Dark' },
       { id: 'pro-light', label: 'Pro (Light)' }
     ]) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = `opt-chip${this.theme === th.id ? ' active' : ''}`;
-      b.textContent = th.label;
-      b.addEventListener('click', () => {
-        this.theme = th.id;
-        document.documentElement.setAttribute('data-theme', th.id);
-        this.renderProjectSheet();
-      });
-      thRow.appendChild(b);
+      const o = document.createElement('option');
+      o.value = th.id;
+      o.textContent = th.label;
+      if (this.theme === th.id) o.selected = true;
+      thSel.appendChild(o);
     }
-    body.appendChild(thRow);
+    thSel.addEventListener('change', () => {
+      this.theme = thSel.value;
+      document.documentElement.setAttribute('data-theme', thSel.value);
+      this.requestRender();
+    });
+    thField.appendChild(thSel);
+    row2.appendChild(thField);
 
-    const histLabel = document.createElement('div');
-    histLabel.style.fontSize = '11.5px';
-    histLabel.style.fontWeight = '600';
-    histLabel.style.color = 'var(--pc-text-dim)';
-    histLabel.textContent = `HISTORY TIMELINE (${doc.history.length} STATES)`;
-    body.appendChild(histLabel);
-
-    const histList = document.createElement('div');
-    histList.className = 'cmd-list';
-    histList.style.maxHeight = '150px';
+    const histField = document.createElement('div');
+    histField.className = 'ctrl-field';
+    histField.innerHTML = `<label>History State (${doc.history.length})</label>`;
+    const histSel = document.createElement('select');
+    histSel.className = 'pc-select';
     for (let i = doc.history.length - 1; i >= 0; i--) {
       const h = doc.history[i];
-      const item = document.createElement('button');
-      item.type = 'button';
-      item.className = 'cmd-item';
-      if (i === doc.historyIndex) {
-        item.style.borderColor = 'var(--pc-accent)';
-        item.style.background = 'var(--pc-accent-soft)';
-      }
-      item.innerHTML = `
-        <span class="cmd-item-title">${i === doc.historyIndex ? '● ' : ''}${h.label}</span>
-        <span class="cmd-item-id">Step #${i + 1}</span>
-      `;
-      item.addEventListener('click', () => {
-        doc.restoreSnapshot(i);
-        this.session.notify('history.jump');
-      });
-      histList.appendChild(item);
+      const o = document.createElement('option');
+      o.value = String(i);
+      o.textContent = `#${i + 1}: ${h.label}`;
+      if (i === doc.historyIndex) o.selected = true;
+      histSel.appendChild(o);
     }
-    body.appendChild(histList);
+    histSel.addEventListener('change', () => {
+      doc.restoreSnapshot(Number(histSel.value));
+      this.session.notify('history.jump');
+    });
+    histField.appendChild(histSel);
+    row2.appendChild(histField);
+
+    body.appendChild(row2);
   }
 
   appendRangeRow(container, label, min, max, step, value, unit, onChange) {
@@ -3435,8 +3801,8 @@ class PhotoCraftMobileApp {
   }
 
   /* ==========================================================================
-   * Modals: Type Tool + Font Importer, Full Blending Options & Layer Styles (fx),
-   * Export As, New Doc, Color Picker, Command Palette
+   * Modals: Type Tool, Full Blending Options & Layer Styles (fx),
+   * Export As with Storage Permission & File Location Option
    * ========================================================================== */
   openModal(title, renderBodyFn, renderFooterFn) {
     const overlay = document.getElementById('modal-overlay');
@@ -3454,15 +3820,11 @@ class PhotoCraftMobileApp {
     document.getElementById('modal-overlay').hidden = true;
   }
 
-  /**
-   * Type Layer Editor Modal with Downloaded Font Importer (.ttf/.otf/.woff/.woff2),
-   * Horizontal & Vertical Type, Tracking, Leading, Weight, Italic, and Warp Text!
-   */
   openTextEditorModal(existingLayer = null, defaultX = null, defaultY = null) {
     const doc = this.session.doc;
     if (!doc) return;
     const td = existingLayer?.textData || {
-      text: 'PHOTOCRAFT\nMOBILE STUDIO',
+      text: 'PROSTUDIO\nMOBILE EDITION',
       fontFamily: this.activeFontFamily || BUILTIN_FONTS[0].family,
       fontSize: 52,
       fontWeight: '700',
@@ -3493,7 +3855,6 @@ class PhotoCraftMobileApp {
     this.openModal(
       existingLayer ? 'Edit Type & Font Controls' : 'Add Live Type Layer',
       (body) => {
-        // 1. Font Family Dropdown + Import Downloaded Font Button
         const fontBox = document.createElement('div');
         fontBox.className = 'curves-histogram-card';
         fontBox.innerHTML = `
@@ -3523,7 +3884,6 @@ class PhotoCraftMobileApp {
         });
         body.appendChild(fontBox);
 
-        // 2. Text Content
         const f1 = document.createElement('div');
         f1.className = 'ctrl-field';
         f1.innerHTML = `<label>Type Content</label>
@@ -3532,7 +3892,6 @@ class PhotoCraftMobileApp {
         ta.addEventListener('input', () => (textVal = ta.value));
         body.appendChild(f1);
 
-        // 3. Orientation, Weight, Italic, Alignment, Color, Warp
         const grid = document.createElement('div');
         grid.style.display = 'grid';
         grid.style.gridTemplateColumns = '1fr 1fr';
@@ -3591,7 +3950,6 @@ class PhotoCraftMobileApp {
         grid.querySelector('#mt-warp').addEventListener('change', (e) => (warp = e.target.value));
         body.appendChild(grid);
 
-        // 4. Size, Tracking (Letter-Spacing), Leading (Line-Height)
         const sliders = document.createElement('div');
         sliders.className = 'slider-list';
         this.appendRangeRow(sliders, 'Font Size (px)', 12, 180, 1, fontSize, 'px', (v) => (fontSize = v));
@@ -3646,14 +4004,10 @@ class PhotoCraftMobileApp {
   }
 
   /**
-   * ==========================================================================
-   * Complete Photoshop / PhotoCraft Blending Options & Layer Styles Dialog (fx)
-   * Includes: Blending Options (Blend Mode, Opacity, Fill Opacity, RGB Channels, Blend If),
-   * Stroke, Color Overlay, Gradient Overlay, Pattern Overlay, Drop Shadow, Inner Shadow,
-   * Outer Glow, Inner Glow, Bevel & Emboss, and Satin.
-   * ==========================================================================
+   * Complete Blending Options & Layer Styles Dialog (fx)
+   * Uses a clean Dropdown Menu for switching between the 11 style sections!
    */
-  openLayerStylesModal() {
+  openLayerStylesModal(initialSection = 'blendingOptions') {
     const doc = this.session.doc;
     const layer = doc?.activeLayer;
     if (!doc || !layer || layer.kind === 'adjustment') {
@@ -3663,26 +4017,39 @@ class PhotoCraftMobileApp {
 
     layer.styles = doc.normalizeLayerStyles(layer.styles);
     const fx = layer.styles;
-    let activeTab = 'blendingOptions';
+    let activeTab = initialSection || 'blendingOptions';
 
     const TABS = [
-      { id: 'blendingOptions', label: '⚙ Blending Options' },
-      { id: 'stroke', label: 'Stroke', key: 'stroke' },
-      { id: 'colorOverlay', label: 'Color Overlay', key: 'colorOverlay' },
-      { id: 'gradientOverlay', label: 'Gradient Overlay', key: 'gradientOverlay' },
-      { id: 'dropShadow', label: 'Drop Shadow', key: 'dropShadow' },
-      { id: 'innerShadow', label: 'Inner Shadow', key: 'innerShadow' },
-      { id: 'outerGlow', label: 'Outer Glow', key: 'outerGlow' },
-      { id: 'innerGlow', label: 'Inner Glow', key: 'innerGlow' },
-      { id: 'bevelEmboss', label: 'Bevel & Emboss', key: 'bevelEmboss' },
-      { id: 'satin', label: 'Satin', key: 'satin' },
-      { id: 'patternOverlay', label: 'Pattern Overlay', key: 'patternOverlay' }
+      { id: 'blendingOptions', label: '⚙ Blending Options (Mode, Fill Opacity, Blend If)' },
+      { id: 'stroke', label: '▢ Stroke (Outside / Inside / Center)', key: 'stroke' },
+      { id: 'colorOverlay', label: '🎨 Color Overlay', key: 'colorOverlay' },
+      { id: 'gradientOverlay', label: '🌈 Gradient Overlay', key: 'gradientOverlay' },
+      { id: 'dropShadow', label: '🌑 Drop Shadow', key: 'dropShadow' },
+      { id: 'innerShadow', label: '🌒 Inner Shadow', key: 'innerShadow' },
+      { id: 'outerGlow', label: '✨ Outer Glow', key: 'outerGlow' },
+      { id: 'innerGlow', label: '🌟 Inner Glow', key: 'innerGlow' },
+      { id: 'bevelEmboss', label: '⛰ Bevel & Emboss', key: 'bevelEmboss' },
+      { id: 'satin', label: '〰 Satin Contour', key: 'satin' },
+      { id: 'patternOverlay', label: '🏁 Pattern Overlay', key: 'patternOverlay' }
     ];
 
     this.openModal(
       `Blending Options & Layer Style (fx) — ${layer.name}`,
       (body) => {
-        // Quick Copy / Paste / Clear style bar
+        // Section Dropdown Selector + Copy/Paste/Clear
+        const topRow = document.createElement('div');
+        topRow.style.display = 'flex';
+        topRow.style.flexDirection = 'column';
+        topRow.style.gap = '6px';
+
+        const secField = document.createElement('div');
+        secField.className = 'ctrl-field';
+        secField.innerHTML = `<label>Select Layer Style Effect Section</label>`;
+        const secSel = document.createElement('select');
+        secSel.className = 'pc-select';
+        secField.appendChild(secSel);
+        topRow.appendChild(secField);
+
         const utilRow = document.createElement('div');
         utilRow.style.display = 'flex';
         utilRow.style.gap = '6px';
@@ -3698,44 +4065,35 @@ class PhotoCraftMobileApp {
         utilRow.querySelector('#fx-paste-btn').addEventListener('click', () => {
           this.session.dispatch('layer.pasteStyle');
           this.closeModal();
-          this.openLayerStylesModal();
+          this.openLayerStylesModal(activeTab);
           this.showToast('Pasted Layer Style');
         });
         utilRow.querySelector('#fx-clear-btn').addEventListener('click', () => {
           this.session.dispatch('layer.clearStyle');
           this.closeModal();
-          this.openLayerStylesModal();
+          this.openLayerStylesModal(activeTab);
           this.showToast('Cleared Layer Styles');
         });
-        body.appendChild(utilRow);
-
-        // Effect Tab Strip
-        const tabBar = document.createElement('div');
-        tabBar.className = 'sub-tabs';
-        body.appendChild(tabBar);
+        topRow.appendChild(utilRow);
+        body.appendChild(topRow);
 
         const detailContainer = document.createElement('div');
         detailContainer.className = 'curves-histogram-card';
         body.appendChild(detailContainer);
 
         const renderTabsAndDetail = () => {
-          tabBar.innerHTML = '';
+          secSel.innerHTML = '';
           for (const t of TABS) {
             const isEn = t.key && fx[t.key]?.enabled;
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = `sub-tab-btn${activeTab === t.id ? ' active' : ''}`;
-            btn.textContent = `${isEn ? '✓ ' : ''}${t.label}`;
-            btn.addEventListener('click', () => {
-              activeTab = t.id;
-              renderTabsAndDetail();
-            });
-            tabBar.appendChild(btn);
+            const opt = document.createElement('option');
+            opt.value = t.id;
+            opt.textContent = `${isEn ? '✓ [ON] ' : ''}${t.label}`;
+            if (activeTab === t.id) opt.selected = true;
+            secSel.appendChild(opt);
           }
 
           detailContainer.innerHTML = '';
 
-          // Helper for enabling effect checkbox header
           const addEffectHeader = (fxKey, title, hasColor = false) => {
             const eff = fx[fxKey];
             const hdr = document.createElement('div');
@@ -3753,6 +4111,7 @@ class PhotoCraftMobileApp {
             cb.addEventListener('change', () => {
               eff.enabled = cb.checked;
               doc.compose();
+              this.requestRender();
               renderTabsAndDetail();
             });
             if (hasColor) {
@@ -3761,6 +4120,7 @@ class PhotoCraftMobileApp {
                 eff.enabled = true;
                 cb.checked = true;
                 doc.compose();
+                this.requestRender();
               });
             }
             detailContainer.appendChild(hdr);
@@ -3771,6 +4131,7 @@ class PhotoCraftMobileApp {
             fx[fxKey].enabled = true;
             if (cb) cb.checked = true;
             doc.compose();
+            this.requestRender();
           };
 
           if (activeTab === 'blendingOptions') {
@@ -3790,6 +4151,7 @@ class PhotoCraftMobileApp {
             sel.addEventListener('change', () => {
               layer.blendMode = sel.value;
               doc.compose();
+              this.requestRender();
             });
             bmField.appendChild(sel);
             detailContainer.appendChild(bmField);
@@ -3797,13 +4159,14 @@ class PhotoCraftMobileApp {
             this.appendRangeRow(detailContainer, 'Layer Opacity (%)', 0, 100, 1, Math.round((layer.opacity ?? 1) * 100), '%', (v) => {
               layer.opacity = v / 100;
               doc.compose();
+              this.requestRender();
             });
             this.appendRangeRow(detailContainer, 'Fill Opacity (keeps fx at 100%)', 0, 100, 1, Math.round((layer.fill ?? 1) * 100), '%', (v) => {
               layer.fill = v / 100;
               doc.compose();
+              this.requestRender();
             });
 
-            // RGB Channels Checkboxes
             const chDiv = document.createElement('div');
             chDiv.style.display = 'flex';
             chDiv.style.alignItems = 'center';
@@ -3820,6 +4183,7 @@ class PhotoCraftMobileApp {
               chDiv.querySelector(`#bo-ch-${k}`).addEventListener('change', (e) => {
                 bo.channels[k] = e.target.checked;
                 doc.compose();
+                this.requestRender();
               });
             }
             detailContainer.appendChild(chDiv);
@@ -3827,10 +4191,12 @@ class PhotoCraftMobileApp {
             this.appendRangeRow(detailContainer, 'Blend If: This Layer Shadows Clip', 0, 240, 1, bo.blendIfBlack ?? 0, '', (v) => {
               bo.blendIfBlack = v;
               doc.compose();
+              this.requestRender();
             });
             this.appendRangeRow(detailContainer, 'Blend If: This Layer Highlights Clip', 15, 255, 1, bo.blendIfWhite ?? 255, '', (v) => {
               bo.blendIfWhite = v;
               doc.compose();
+              this.requestRender();
             });
           } else if (activeTab === 'stroke') {
             const st = fx.stroke;
@@ -4106,6 +4472,11 @@ class PhotoCraftMobileApp {
           }
         };
 
+        secSel.addEventListener('change', () => {
+          activeTab = secSel.value;
+          renderTabsAndDetail();
+        });
+
         renderTabsAndDetail();
       },
       (footer) => {
@@ -4123,6 +4494,9 @@ class PhotoCraftMobileApp {
     );
   }
 
+  /**
+   * Export Modal with Storage Permission Check & Download/Export File Location Selector!
+   */
   openExportModal() {
     const doc = this.session.doc;
     if (!doc) return;
@@ -4131,17 +4505,90 @@ class PhotoCraftMobileApp {
     let format = 'psd';
     let quality = 92;
     let scalePct = 100;
+    let baseFileName = doc.title.replace(/\.(psd|png|jpg|jpeg|webp)$/i, '') || 'prostudio-artwork';
 
     this.openModal(
-      'Export As (PSD / PNG / JPG / WebP)',
+      'Export & Choose Save File Location',
       (body) => {
+        // 1. Storage Permission & File Location Card
+        const locCard = document.createElement('div');
+        locCard.className = 'curves-histogram-card';
+        locCard.innerHTML = `
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <span style="font-size:11.5px;font-weight:600;color:var(--pc-accent);">📁 Storage &amp; Destination Folder</span>
+            <button type="button" class="opt-chip ${this.storagePermissionGranted ? 'active' : ''}" id="exp-perm-btn" style="height:24px;font-size:10.5px;">
+              ${this.storagePermissionGranted ? '✓ Storage Permitted' : '🔒 Grant Storage Permission'}
+            </button>
+          </div>
+          <div class="ctrl-field">
+            <label>Save Location</label>
+            <select class="pc-select" id="exp-loc-select">
+              ${EXPORT_LOCATIONS.map((l) => `<option value="${l.id}" ${this.exportLocation === l.id ? 'selected' : ''}>${l.label}</option>`).join('')}
+            </select>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <div class="ctrl-field">
+              <label>Subfolder Name</label>
+              <input type="text" class="pc-input" id="exp-subfolder-in" value="${this.exportSubfolder}" placeholder="ProStudio" />
+            </div>
+            <div class="ctrl-field">
+              <label>File Name</label>
+              <input type="text" class="pc-input" id="exp-filename-in" value="${baseFileName}" />
+            </div>
+          </div>
+          <div id="exp-resolved-path" style="font-size:10.5px;font-family:var(--pc-font-mono);color:var(--pc-text-dim);padding-top:2px;"></div>
+        `;
+
+        const permBtn = locCard.querySelector('#exp-perm-btn');
+        permBtn.addEventListener('click', () => {
+          this.requestDeviceStoragePermission(() => {
+            permBtn.textContent = '✓ Storage Permitted';
+            permBtn.classList.add('active');
+          });
+        });
+
+        const locSel = locCard.querySelector('#exp-loc-select');
+        const subIn = locCard.querySelector('#exp-subfolder-in');
+        const nameIn = locCard.querySelector('#exp-filename-in');
+        const pathOut = locCard.querySelector('#exp-resolved-path');
+
+        const refreshPathLabel = () => {
+          const loc = EXPORT_LOCATIONS.find((l) => l.id === locSel.value) || EXPORT_LOCATIONS[0];
+          const ext = format === 'jpeg' ? 'jpg' : format;
+          const sub = subIn.value.trim();
+          const fn = (nameIn.value.trim() || 'artwork') + '.' + ext;
+          pathOut.textContent =
+            loc.id === 'picker'
+              ? `Target: System Folder Picker ➔ ${fn}`
+              : `Target: ${loc.pathHint}${sub ? '/' + sub : ''}/${fn}`;
+        };
+
+        locSel.addEventListener('change', () => {
+          this.exportLocation = locSel.value;
+          localStorage.setItem('ps_export_location', this.exportLocation);
+          this.syncHeaderAndHUD();
+          refreshPathLabel();
+        });
+        subIn.addEventListener('input', () => {
+          this.exportSubfolder = subIn.value.trim();
+          localStorage.setItem('ps_export_subfolder', this.exportSubfolder);
+          refreshPathLabel();
+        });
+        nameIn.addEventListener('input', () => {
+          baseFileName = nameIn.value.trim() || 'prostudio-artwork';
+          refreshPathLabel();
+        });
+
+        body.appendChild(locCard);
+
+        // 2. File Format Dropdown
         const fmtGroup = document.createElement('div');
         fmtGroup.className = 'ctrl-field';
         fmtGroup.innerHTML = `<label>File Format</label>`;
         const sel = document.createElement('select');
         sel.className = 'pc-select';
         for (const f of [
-          { id: 'psd', label: 'Adobe Photoshop Layered (.PSD — 8BPS Binary)' },
+          { id: 'psd', label: 'Layered Photoshop Document (.PSD — 8BPS Binary)' },
           { id: 'png', label: 'PNG Lossless with Transparency (.PNG)' },
           { id: 'jpeg', label: 'JPEG Photo (.JPG)' },
           { id: 'webp', label: 'WebP Modern Image (.WEBP)' }
@@ -4187,6 +4634,7 @@ class PhotoCraftMobileApp {
             <div>Layers<strong>${format === 'psd' ? doc.layers.length : '1 (Flat)'}</strong></div>
             <div>Est. Size<strong>~${approxKB > 1024 ? (approxKB / 1024).toFixed(1) + ' MB' : approxKB + ' KB'}</strong></div>
           `;
+          refreshPathLabel();
         };
 
         sel.addEventListener('change', () => {
@@ -4205,9 +4653,9 @@ class PhotoCraftMobileApp {
         const exportBtn = document.createElement('button');
         exportBtn.type = 'button';
         exportBtn.className = 'pill-action-btn';
-        exportBtn.textContent = 'Export & Download';
+        exportBtn.textContent = 'Export to Location ✓';
         exportBtn.addEventListener('click', () => {
-          this.performExport(format, quality / 100, scalePct / 100);
+          this.performExport(format, quality / 100, scalePct / 100, baseFileName);
           this.closeModal();
         });
 
@@ -4217,17 +4665,16 @@ class PhotoCraftMobileApp {
     );
   }
 
-  performExport(format, quality = 0.92, scale = 1.0) {
+  performExport(format, quality = 0.92, scale = 1.0, customBaseName = null) {
     const doc = this.session.doc;
     if (!doc) return;
     doc.compose();
-    const baseName = doc.title.replace(/\.(psd|png|jpg|jpeg|webp|pcraft)$/i, '') || 'photocraft-mobile';
+    const baseName = customBaseName || doc.title.replace(/\.(psd|png|jpg|jpeg|webp)$/i, '') || 'prostudio-mobile';
 
     if (format === 'psd') {
       const psdBytes = PsdCodec.encodePsd(doc, doc.compositeCanvas);
       const blob = new Blob([psdBytes], { type: 'image/vnd.adobe.photoshop' });
-      this.triggerDownloadOrAndroidShare(blob, `${baseName}.psd`, 'image/vnd.adobe.photoshop');
-      this.showToast(`Exported Layered PSD (${doc.layers.length} layers)`);
+      this.saveBlobToConfiguredLocation(blob, `${baseName}.psd`, 'image/vnd.adobe.photoshop');
       return;
     }
 
@@ -4249,23 +4696,55 @@ class PhotoCraftMobileApp {
     outCanvas.toBlob(
       (blob) => {
         if (!blob) return;
-        this.triggerDownloadOrAndroidShare(blob, `${baseName}.${ext}`, mime);
-        this.showToast(`Exported ${baseName}.${ext}`);
+        this.saveBlobToConfiguredLocation(blob, `${baseName}.${ext}`, mime);
       },
       mime,
       quality
     );
   }
 
-  triggerDownloadOrAndroidShare(blob, filename, mimeType) {
-    if (window.PhotoCraftAndroid && typeof window.PhotoCraftAndroid.saveBase64File === 'function') {
+  /**
+   * Save exported file to the user's chosen location:
+   * - On Android APK (`window.ProStudioAndroid`): routes to `saveBase64ToLocation(base64, filename, mime, locationChoice, subfolder)`
+   *   which supports Android's Storage Access Framework folder picker (`Intent.ACTION_CREATE_DOCUMENT`) OR
+   *   `Downloads`, `Pictures`, `DCIM`, `Documents` with custom subfolders!
+   * - On Web browsers: uses `window.showSaveFilePicker` when `exportLocation === 'picker'` and supported, or standard download.
+   */
+  async saveBlobToConfiguredLocation(blob, filename, mimeType) {
+    if (window.ProStudioAndroid) {
       const reader = new FileReader();
       reader.onloadend = () => {
         const base64 = String(reader.result).split(',')[1] || '';
-        window.PhotoCraftAndroid.saveBase64File(base64, filename, mimeType);
+        if (typeof window.ProStudioAndroid.saveBase64ToLocation === 'function') {
+          window.ProStudioAndroid.saveBase64ToLocation(
+            base64,
+            filename,
+            mimeType,
+            this.exportLocation,
+            this.exportSubfolder || ''
+          );
+        } else if (typeof window.ProStudioAndroid.saveBase64File === 'function') {
+          window.ProStudioAndroid.saveBase64File(base64, filename, mimeType);
+        }
       };
       reader.readAsDataURL(blob);
       return;
+    }
+
+    // If user chose "Ask Where to Save (Pick Custom Folder...)" and browser supports File System Access API
+    if (this.exportLocation === 'picker' && typeof window.showSaveFilePicker === 'function') {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: filename
+        });
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        this.showToast(`Saved ${filename} to chosen folder`);
+        return;
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+      }
     }
 
     const url = URL.createObjectURL(blob);
@@ -4276,6 +4755,8 @@ class PhotoCraftMobileApp {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
+    const locObj = EXPORT_LOCATIONS.find((l) => l.id === this.exportLocation);
+    this.showToast(`Exported ${filename} (${locObj?.label || 'Downloads'})`);
   }
 
   async handleOpenFile(file) {
@@ -4284,7 +4765,7 @@ class PhotoCraftMobileApp {
       if (name.endsWith('.psd') || name.endsWith('.psb')) {
         const buf = await file.arrayBuffer();
         const decoded = PsdCodec.decodePsd(buf);
-        const doc = new PhotoCraftDoc(decoded.width, decoded.height, file.name);
+        const doc = new StudioDoc(decoded.width, decoded.height, file.name);
         for (const l of decoded.layers) {
           const lyr = doc.createLayerObject({
             name: l.name,
@@ -4307,7 +4788,7 @@ class PhotoCraftMobileApp {
       }
 
       const bmp = await createImageBitmap(file);
-      const doc = new PhotoCraftDoc(bmp.width, bmp.height, file.name.replace(/\.[^.]+$/, '.psd'));
+      const doc = new StudioDoc(bmp.width, bmp.height, file.name.replace(/\.[^.]+$/, '.psd'));
       const bg = doc.createLayerObject({ name: file.name, kind: 'raster' });
       bg.canvas.getContext('2d').drawImage(bmp, 0, 0);
       doc.layers.push(bg);
@@ -4350,7 +4831,7 @@ class PhotoCraftMobileApp {
     let title = 'Mobile-Artwork.psd';
 
     this.openModal(
-      'New PhotoCraft Document',
+      'New Studio Document',
       (body) => {
         const presets = document.createElement('div');
         presets.className = 'showcase-list';
@@ -4412,7 +4893,7 @@ class PhotoCraftMobileApp {
 
   openColorPickerModal() {
     this.openModal(
-      'Color Picker & PhotoCraft Swatches',
+      'Color Picker & Studio Swatches',
       (body) => {
         const row = document.createElement('div');
         row.style.display = 'grid';
@@ -4475,72 +4956,9 @@ class PhotoCraftMobileApp {
     );
   }
 
-  openCommandPaletteModal() {
-    this.openModal(
-      'PhotoCraft Engine Command Palette',
-      (body) => {
-        const searchIn = document.createElement('input');
-        searchIn.type = 'text';
-        searchIn.className = 'pc-input';
-        searchIn.placeholder = 'Search commands (e.g. perspectiveCrop, slice, subject, stroke)...';
-        body.appendChild(searchIn);
-
-        const list = document.createElement('div');
-        list.className = 'cmd-list';
-        body.appendChild(list);
-
-        const allCommands = Array.from(this.session.commands.values());
-        const renderList = (query = '') => {
-          list.innerHTML = '';
-          const q = query.trim().toLowerCase();
-          const filtered = allCommands.filter(
-            (c) => !q || c.id.toLowerCase().includes(q) || c.title.toLowerCase().includes(q)
-          );
-          for (const cmd of filtered) {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'cmd-item';
-            btn.innerHTML = `
-              <span class="cmd-item-title">${cmd.title}</span>
-              <span class="cmd-item-id">${cmd.id}</span>
-            `;
-            btn.addEventListener('click', () => {
-              this.closeModal();
-              if (cmd.id === 'adjustment.addLayer') {
-                this.session.dispatch(cmd.id, { type: 'vibrance', params: { vibrance: 30, saturation: 10 } });
-              } else if (cmd.id === 'filter.apply') {
-                this.session.dispatch(cmd.id, { id: 'gaussianBlur', params: { radius: 8 } });
-              } else if (cmd.id === 'crop.apply') {
-                this.selectTool('crop');
-              } else if (cmd.id === 'image.perspectiveCrop') {
-                this.selectTool('perspectiveCrop');
-              } else {
-                this.session.dispatch(cmd.id, {});
-              }
-              this.showToast(`Executed ${cmd.id}`);
-            });
-            list.appendChild(btn);
-          }
-        };
-
-        searchIn.addEventListener('input', () => renderList(searchIn.value));
-        renderList();
-        setTimeout(() => searchIn.focus(), 50);
-      },
-      (footer) => {
-        const close = document.createElement('button');
-        close.type = 'button';
-        close.className = 'pill-action-btn secondary';
-        close.textContent = 'Close';
-        close.addEventListener('click', () => this.closeModal());
-        footer.appendChild(close);
-      }
-    );
-  }
-
   hapticTick() {
-    if (window.PhotoCraftAndroid && typeof window.PhotoCraftAndroid.hapticTick === 'function') {
-      window.PhotoCraftAndroid.hapticTick();
+    if (window.ProStudioAndroid && typeof window.ProStudioAndroid.hapticTick === 'function') {
+      window.ProStudioAndroid.hapticTick();
     } else if (navigator.vibrate) {
       navigator.vibrate(8);
     }
@@ -4561,5 +4979,5 @@ class PhotoCraftMobileApp {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  window.photoCraftMobile = new PhotoCraftMobileApp();
+  window.proStudioMobile = new ProStudioMobileApp();
 });

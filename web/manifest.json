@@ -1,18 +1,13 @@
 {
-  "name": "PhotoCraft Mobile",
-  "short_name": "PhotoCraft",
-  "description": "Mobile version of PhotoCraft — Open-source layered PSD & photo editor.",
+  "name": "ProStudio Mobile — Layered Photo & PSD Studio",
+  "short_name": "ProStudio",
+  "description": "Mobile-first layered raster image editor with PSD round-trip, adjustment layers, layer styles (fx), custom fonts, perspective crop, slice tool, and AI Select Subject.",
   "start_url": "./index.html",
   "display": "standalone",
-  "orientation": "portrait",
-  "background_color": "#262626",
-  "theme_color": "#262626",
+  "orientation": "portrait-primary",
+  "background_color": "#090b10",
+  "theme_color": "#090b10",
   "icons": [
-    {
-      "src": "assets/icons/icon-64.png",
-      "sizes": "64x64",
-      "type": "image/png"
-    },
     {
       "src": "assets/icons/icon-128.png",
       "sizes": "128x128",

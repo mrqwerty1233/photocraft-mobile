@@ -1,7 +1,6 @@
 /* ============================================================================
- * PhotoCraft Mobile — Core Document Model, Compositor, Slices, Perspective Crop,
- * Custom Font Type Engine, Layer Effects (fx) & Command Registry
- * Mirrors crates/doc, crates/compose, and crates/engine
+ * ProStudio Mobile — Core Document Model, Fast Sandwich Compositor, Slices,
+ * Perspective Crop, Custom Font Type Engine, Layer Effects (fx) & Command Registry
  * ============================================================================ */
 
 import { Algorithms } from './algorithms.js';
@@ -28,7 +27,7 @@ export const BLEND_MODES = [
   { id: 'luminosity', label: 'Luminosity' }
 ];
 
-export class PhotoCraftDoc {
+export class StudioDoc {
   constructor(width = 1080, height = 1080, title = 'Untitled-1.psd') {
     this.width = width;
     this.height = height;
@@ -43,8 +42,8 @@ export class PhotoCraftDoc {
     this.selectionCanvas = null; // HTMLCanvasElement with alpha = selectionMask
     this.selectionOutline = null; // { type: 'rect'|'ellipse'|'lasso'|'mask', contourPoints? }
 
-    // Slices state (crates/ui-egui/src/tools/slice_ui.rs)
-    this.slices = []; // User & Layer slices: { id, name, x, y, w, h, origin, url, target, altText, format }
+    // Slices state
+    this.slices = [];
     this.selectedSliceId = null;
     this.hideAutoSlices = false;
 
@@ -53,13 +52,20 @@ export class PhotoCraftDoc {
     this.compositeCanvas.width = width;
     this.compositeCanvas.height = height;
 
+    // Fast interactive sandwich caches (avoids re-evaluating unchanged layers during pointermove)
+    this.fastModeActive = false;
+    this.belowCacheCanvas = null;
+    this.aboveCacheCanvas = null;
+    this.hasBelowContent = false;
+    this.hasAboveContent = false;
+
     // Live filter preview override
     this.livePreview = null;
 
     // History stack
     this.history = [];
     this.historyIndex = -1;
-    this.maxHistory = 30;
+    this.maxHistory = 25;
   }
 
   get activeLayer() {
@@ -133,7 +139,6 @@ export class PhotoCraftDoc {
 
   /**
    * Rasterize live Type Layer onto its layer canvas.
-   * Supports custom imported fonts, Horizontal & Vertical orientation, Italic, Tracking, Leading, and Warp!
    */
   rasterizeTextLayer(layer) {
     if (!layer || !layer.textData) return;
@@ -150,16 +155,15 @@ export class PhotoCraftDoc {
     ctx.fillStyle = td.color || '#ffffff';
     ctx.textBaseline = 'middle';
 
-    const tracking = Number(td.tracking || 0); // extra px per character
-    const orientation = td.orientation || 'horizontal'; // 'horizontal' | 'vertical'
-    const warp = td.warp || 'none'; // 'none' | 'arcUp' | 'arcDown' | 'wave'
+    const tracking = Number(td.tracking || 0);
+    const orientation = td.orientation || 'horizontal';
+    const warp = td.warp || 'none';
     const warpBend = Number(td.warpBend ?? 35) / 100;
 
     const baseX = td.x ?? this.width / 2;
     const baseY = td.y ?? this.height / 2;
 
     if (orientation === 'vertical') {
-      // Vertical Type Tool (columns top-to-bottom, right-to-left)
       const cols = String(td.text || '').split('\n');
       const colSpacing = size * (td.lineHeight || 1.3);
       const stepY = size + tracking;
@@ -204,7 +208,6 @@ export class PhotoCraftDoc {
         }
         ctx.fillText(line, baseX, y);
       } else {
-        // Character-by-character layout with tracking and optional Warp curve
         const chars = Array.from(line);
         const widths = chars.map((ch) => ctx.measureText(ch).width);
         const lineW =
@@ -220,7 +223,7 @@ export class PhotoCraftDoc {
         for (let c = 0; c < chars.length; c++) {
           const cw = widths[c];
           const cx = cursorX + cw / 2;
-          const normT = lineW > 0 ? (cx - (baseX - lineW / 2)) / lineW - 0.5 : 0; // -0.5 .. +0.5
+          const normT = lineW > 0 ? (cx - (baseX - lineW / 2)) / lineW - 0.5 : 0;
 
           let dy = 0;
           let rot = 0;
@@ -307,7 +310,7 @@ export class PhotoCraftDoc {
   }
 
   /**
-   * Render a single layer (including its mask and all 10 Layer Styles fx) to a 2D context.
+   * Render a single layer (including its mask and Layer Styles fx) to a 2D context.
    */
   renderSingleLayerToContext(layer, destCtx, applyPreview = false) {
     if (!layer || !layer.visible || layer.kind === 'adjustment') return;
@@ -340,7 +343,6 @@ export class PhotoCraftDoc {
       srcCanvas = temp;
     }
 
-    // Apply Layer Mask if present and enabled
     if (layer.maskCanvas && layer.maskEnabled) {
       const masked = document.createElement('canvas');
       masked.width = this.width;
@@ -360,14 +362,99 @@ export class PhotoCraftDoc {
       srcCanvas = masked;
     }
 
-    // Delegate to the full Layer Effects & Blending Options compositor
+    // Fast path when no layer effects are active
+    if (!Algorithms.hasActiveLayerEffects(layer.styles)) {
+      destCtx.save();
+      destCtx.globalCompositeOperation = layer.blendMode || 'source-over';
+      destCtx.globalAlpha = Math.max(0, Math.min(1, (layer.opacity ?? 1) * (layer.fill ?? 1)));
+      destCtx.drawImage(srcCanvas, 0, 0);
+      destCtx.restore();
+      return;
+    }
+
     Algorithms.renderLayerWithEffects(layer, destCtx, srcCanvas, this.width, this.height);
+  }
+
+  /**
+   * Pre-cache static layers below and above the active layer before an interactive
+   * brush stroke or layer drag so pointermove runs at 60fps with zero per-pixel CPU loops!
+   */
+  beginFastInteraction() {
+    const activeIdx = this.layers.findIndex((l) => l.id === this.activeLayerId);
+    if (activeIdx < 0) return;
+
+    if (!this.belowCacheCanvas) {
+      this.belowCacheCanvas = document.createElement('canvas');
+      this.aboveCacheCanvas = document.createElement('canvas');
+    }
+    this.belowCacheCanvas.width = this.width;
+    this.belowCacheCanvas.height = this.height;
+    this.aboveCacheCanvas.width = this.width;
+    this.aboveCacheCanvas.height = this.height;
+
+    const bCtx = this.belowCacheCanvas.getContext('2d');
+    bCtx.clearRect(0, 0, this.width, this.height);
+    this.hasBelowContent = false;
+    for (let i = 0; i < activeIdx; i++) {
+      const lyr = this.layers[i];
+      if (!lyr.visible) continue;
+      this.hasBelowContent = true;
+      if (lyr.kind === 'adjustment' && lyr.adjustment) {
+        const compData = bCtx.getImageData(0, 0, this.width, this.height);
+        Algorithms.applyAdjustmentToImageData(compData, lyr.adjustment.type, lyr.adjustment.params, null);
+        bCtx.putImageData(compData, 0, 0);
+      } else {
+        this.renderSingleLayerToContext(lyr, bCtx, false);
+      }
+    }
+
+    const aCtx = this.aboveCacheCanvas.getContext('2d');
+    aCtx.clearRect(0, 0, this.width, this.height);
+    this.hasAboveContent = false;
+    for (let i = activeIdx + 1; i < this.layers.length; i++) {
+      const lyr = this.layers[i];
+      if (!lyr.visible || lyr.kind === 'adjustment') continue;
+      this.hasAboveContent = true;
+      this.renderSingleLayerToContext(lyr, aCtx, false);
+    }
+
+    this.fastModeActive = true;
+  }
+
+  /**
+   * Ultra-fast GPU drawImage composition used during active pointermove strokes/drags.
+   */
+  composeFast() {
+    if (!this.fastModeActive) {
+      return this.compose();
+    }
+    const ctx = this.compositeCanvas.getContext('2d');
+    ctx.clearRect(0, 0, this.width, this.height);
+    if (this.hasBelowContent) {
+      ctx.drawImage(this.belowCacheCanvas, 0, 0);
+    }
+    const active = this.activeLayer;
+    if (active && active.visible && active.kind !== 'adjustment') {
+      this.renderSingleLayerToContext(active, ctx, false);
+    }
+    if (this.hasAboveContent) {
+      ctx.drawImage(this.aboveCacheCanvas, 0, 0);
+    }
+    return this.compositeCanvas;
+  }
+
+  endFastInteraction() {
+    this.fastModeActive = false;
+    return this.compose();
   }
 
   /**
    * Evaluate the complete layer tree into `this.compositeCanvas`.
    */
   compose() {
+    if (this.fastModeActive) {
+      return this.composeFast();
+    }
     const ctx = this.compositeCanvas.getContext('2d');
     ctx.clearRect(0, 0, this.width, this.height);
 
@@ -432,9 +519,7 @@ export class PhotoCraftDoc {
   }
 
   /**
-   * ============================================================================
-   * Slice Tool & Slice Select Tool Engine (crates/ui-egui/src/tools/slice_ui.rs)
-   * ============================================================================
+   * Slice Tool & Slice Select Tool Engine
    */
   addSlice(opts = {}) {
     const id = opts.id || `slice_${NEXT_SLICE_ID++}`;
@@ -450,7 +535,7 @@ export class PhotoCraftDoc {
       y,
       w,
       h,
-      origin: opts.origin || 'user', // 'user' | 'layer' | 'auto'
+      origin: opts.origin || 'user',
       url: opts.url || '',
       target: opts.target || '',
       altText: opts.altText || '',
@@ -534,9 +619,6 @@ export class PhotoCraftDoc {
     });
   }
 
-  /**
-   * Resolve numbered display slices (User slices + Auto-generated grid slices).
-   */
   resolveDisplaySlices() {
     if (this.slices.length === 0) {
       return [
@@ -554,7 +636,6 @@ export class PhotoCraftDoc {
     }
 
     const result = [];
-    // Collect X/Y cut lines for auto-slices if not hidden
     if (!this.hideAutoSlices) {
       const xs = new Set([0, this.width]);
       const ys = new Set([0, this.height]);
@@ -598,7 +679,6 @@ export class PhotoCraftDoc {
       result.push({ ...u });
     }
 
-    // Sort top-to-bottom, left-to-right and assign 1-based display numbers
     result.sort((a, b) => (Math.abs(a.y - b.y) > 4 ? a.y - b.y : a.x - b.x));
     result.forEach((s, idx) => {
       s.number = idx + 1;
@@ -607,9 +687,7 @@ export class PhotoCraftDoc {
   }
 
   /**
-   * ============================================================================
-   * Selection Helpers (including Select -> Subject with pixel-accurate contour)
-   * ============================================================================
+   * Selection Helpers
    */
   setRectSelection(x, y, w, h) {
     const x0 = Math.max(0, Math.min(this.width, Math.round(Math.min(x, x + w))));
@@ -741,9 +819,6 @@ export class PhotoCraftDoc {
     this.updateSelectionFromMask(mask, { type: 'mask', contourPoints });
   }
 
-  /**
-   * Select -> Subject (crates/algo/src/segment/subject.rs)
-   */
   selectSubject() {
     this.compose();
     const imgData = this.compositeCanvas.getContext('2d').getImageData(0, 0, this.width, this.height);
@@ -851,9 +926,6 @@ export class PhotoCraftDoc {
     this.editingMask = true;
   }
 
-  /**
-   * Push immutable snapshot onto history stack for Undo / Redo.
-   */
   pushHistory(label = 'Edit') {
     if (this.historyIndex < this.history.length - 1) {
       this.history = this.history.slice(0, this.historyIndex + 1);
@@ -952,10 +1024,7 @@ export class PhotoCraftDoc {
   }
 }
 
-/**
- * PhotoCraft Command Registry & Session Manager (mirrors photocraft-engine::Session)
- */
-export class PhotoCraftSession {
+export class StudioSession {
   constructor() {
     this.doc = null;
     this.commands = new Map();
@@ -986,7 +1055,7 @@ export class PhotoCraftSession {
   dispatch(id, params = {}) {
     const spec = this.commands.get(id);
     if (!spec) {
-      throw new Error(`Unknown PhotoCraft command: ${id}`);
+      throw new Error(`Unknown command: ${id}`);
     }
     const res = spec.handler(params);
     this.notify(id);
@@ -1383,10 +1452,6 @@ export class PhotoCraftSession {
       this.doc.pushHistory(`Crop (${cw}×${ch})`);
     });
 
-    /**
-     * Perspective Crop Command (`image.perspectiveCrop`)
-     * Rectifies the 4-corner quad [TL, TR, BR, BL] onto an upright rectangle across all layers.
-     */
     this.registerCommand('image.perspectiveCrop', 'Perspective Crop Document', 'Image', ({ corners, outWidth, outHeight }) => {
       if (!this.doc || !corners || corners.length !== 4) return;
       const topLen = Math.hypot(corners[1].x - corners[0].x, corners[1].y - corners[0].y);
@@ -1404,7 +1469,6 @@ export class PhotoCraftSession {
 
       for (const lyr of this.doc.layers) {
         if (lyr.kind === 'adjustment') continue;
-        // Rasterize type/shape before projective warp
         if (lyr.kind === 'text' || lyr.kind === 'shape') {
           lyr.kind = 'raster';
           lyr.textData = null;
@@ -1419,9 +1483,6 @@ export class PhotoCraftSession {
       this.doc.pushHistory(`Perspective Crop (${cw}×${ch})`);
     });
 
-    /**
-     * Slice Commands (`slice.new`, `slice.divide`, `slice.delete`, `slice.fromLayer`, `slice.clearAll`)
-     */
     this.registerCommand('slice.new', 'Create User Slice', 'Slices', (params) => {
       if (!this.doc) return;
       this.doc.addSlice(params);
@@ -1470,7 +1531,7 @@ export class PhotoCraftSession {
         }
       }
       const td = {
-        text: params.text || 'PHOTOCRAFT',
+        text: params.text || 'PROSTUDIO',
         fontFamily: params.fontFamily || 'Inter, sans-serif',
         fontSize: params.fontSize || 56,
         fontWeight: params.fontWeight || '700',

@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-  <meta name="theme-color" content="#262626" />
+  <meta name="theme-color" content="#252629" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="description" content="PhotoCraft Mobile — Open-source layered photo and PSD editor with Crop, Perspective Crop, Slice tools, Custom Font Type tool, Blending Options & Layer Styles, and Select Subject." />
-  <title>PhotoCraft Mobile — Layered PSD &amp; Photo Editor</title>
+  <meta name="description" content="ProStudio Mobile — Layered PSD and photo editor with Crop, Perspective Crop, Slice tools, Custom Font Type tool, Blending Options & Layer Styles, and Select Subject." />
+  <title>ProStudio Mobile — Layered PSD &amp; Photo Editor</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" type="image/png" href="assets/icons/icon-128.png" />
   <link rel="apple-touch-icon" href="assets/icons/icon-256.png" />
@@ -15,7 +15,7 @@
 </head>
 <body>
   <h1 style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;">
-    PhotoCraft Mobile — Layered PSD and Image Editor
+    ProStudio Mobile — Layered PSD and Image Editor
   </h1>
 
   <div class="outer-environment phone-frame-mode" id="outer-environment">
@@ -24,9 +24,9 @@
       <div class="host-banner-left">
         <span class="host-badge">
           <img src="assets/icons/icon-64.png" alt="" style="width:15px;height:15px;border-radius:3px;" />
-          PhotoCraft Mobile v0.23.2
+          ProStudio Mobile v1.2
         </span>
-        <span>Crop · Perspective Crop · Slice · Custom Fonts · Blending Options (fx) · Select Subject</span>
+        <span>Optimized Canvas · Storage &amp; Export Location · Dropdown Menus · Crop/Slice · Custom Fonts · fx</span>
       </div>
       <div class="host-banner-right">
         <button type="button" class="viewport-mode-btn active" id="btn-frame-phone" title="Preview in Mobile Phone Frame">
@@ -35,7 +35,7 @@
         <button type="button" class="viewport-mode-btn" id="btn-frame-full" title="Expand to Full Window">
           Full Responsive
         </button>
-        <a href="photocraft-mobile.apk" download="photocraft-mobile.apk" class="apk-download-btn" id="banner-apk-download">
+        <a href="prostudio-mobile.apk" download="prostudio-mobile.apk" class="apk-download-btn" id="banner-apk-download">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="7 10 12 15 17 10"/>
@@ -48,16 +48,21 @@
 
     <!-- Main Mobile App Shell -->
     <main class="mobile-app-shell" id="mobile-app-shell">
-      <!-- Top App Bar -->
+      <!-- Top App Bar with Dropdown Menus (▾) -->
       <header class="top-bar">
-        <div class="brand-cluster" id="btn-open-project-sheet" title="Project, Open/Import &amp; Showcases">
-          <img src="assets/icons/icon-128.png" alt="PhotoCraft Icon" class="brand-icon" />
-          <div class="doc-title-group">
-            <div class="doc-title-row">
-              <span class="doc-title" id="doc-title-label">Great-Wave-Kanagawa.psd</span>
+        <div class="dropdown-anchor">
+          <div class="brand-cluster" id="btn-file-dropdown" title="File, Storage &amp; Project Menu">
+            <img src="assets/icons/icon-128.png" alt="ProStudio Icon" class="brand-icon" />
+            <div class="doc-title-group">
+              <div class="doc-title-row">
+                <span class="doc-title" id="doc-title-label">Ocean-Wave-Poster.psd</span>
+                <span style="font-size:10px;color:var(--pc-text-dim);">▾</span>
+              </div>
+              <span class="doc-meta" id="doc-dimensions-label">900 × 1120 px · 6 layers</span>
             </div>
-            <span class="doc-meta" id="doc-dimensions-label">900 × 1120 px · 6 layers</span>
           </div>
+          <!-- File Dropdown Menu -->
+          <div class="dropdown-popover down-left" id="popover-file-menu" hidden></div>
         </div>
 
         <div class="top-actions">
@@ -67,13 +72,24 @@
           <button type="button" class="icon-btn" id="btn-redo" title="Redo (3-finger tap)" aria-label="Redo">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13"/></svg>
           </button>
-          <button type="button" class="pill-action-btn secondary" id="btn-select-menu" title="Select ➔ Subject &amp; Selection Menu" style="height:30px;padding:0 8px;font-size:11px;">
-            ✨ Select ▾
-          </button>
-          <button type="button" class="icon-btn" id="btn-cmd-palette" title="Command Palette" aria-label="Command Palette">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-          </button>
-          <button type="button" class="pill-action-btn" id="btn-export-modal" title="Export PSD / PNG / JPG / WebP">
+
+          <!-- Select Dropdown Menu -->
+          <div class="dropdown-anchor">
+            <button type="button" class="pill-action-btn secondary" id="btn-select-dropdown" title="Select ➔ Subject &amp; Selection Menu">
+              ✨ Select ▾
+            </button>
+            <div class="dropdown-popover down-right" id="popover-select-menu" hidden></div>
+          </div>
+
+          <!-- fx Styles Dropdown Menu -->
+          <div class="dropdown-anchor">
+            <button type="button" class="pill-action-btn secondary" id="btn-fx-dropdown" title="Blending Options &amp; Layer Styles Dropdown">
+              fx ▾
+            </button>
+            <div class="dropdown-popover down-right" id="popover-fx-menu" hidden></div>
+          </div>
+
+          <button type="button" class="pill-action-btn" id="btn-export-modal" title="Export &amp; Choose Save Location">
             Export
           </button>
         </div>
@@ -89,11 +105,11 @@
         <div class="canvas-hud-top">
           <div class="hud-badge hud-layer-chip" id="hud-active-layer" title="Tap to open Layers Sheet">
             <span id="hud-layer-dot" style="width:7px;height:7px;border-radius:50%;background:#378ef0;display:inline-block;"></span>
-            <span id="hud-layer-name">Prussian Blue Wave</span>
+            <span id="hud-layer-name">Cobalt Ocean Wave</span>
           </div>
           <div style="display:flex;gap:6px;pointer-events:auto;">
-            <div class="hud-badge" id="hud-fx-badge" title="Open Blending Options &amp; Layer Styles (fx)">
-              fx Styles
+            <div class="hud-badge" id="hud-storage-badge" title="Storage Permission &amp; Save Folder Settings">
+              📁 Save Dir
             </div>
             <div class="hud-badge" id="hud-zoom-badge" title="Tap to reset zoom to Fit">
               100%
@@ -101,7 +117,7 @@
           </div>
         </div>
 
-        <!-- Floating Left Quick-Brush & Color Pill -->
+        <!-- Compact Floating Left Swatch & Brush Settings Dropdown Trigger (No vertical sliders blocking canvas) -->
         <aside class="floating-brush-pill" id="floating-brush-pill">
           <div class="quick-swatch-stack" id="btn-color-picker" title="Tap to open Color Picker &amp; Swatches">
             <div class="swatch-fg" id="quick-swatch-fg" style="background:#378ef0;"></div>
@@ -110,21 +126,11 @@
           <button type="button" class="icon-btn" id="btn-swap-colors" title="Swap Foreground &amp; Background Colors" style="width:24px;height:20px;">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" style="width:13px;height:13px;"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>
           </button>
-
-          <div class="vert-slider-group">
-            <span class="vert-slider-label">Size</span>
-            <div class="vert-slider-track" id="quick-size-track" title="Drag vertically to adjust Brush Size">
-              <div class="vert-slider-fill" id="quick-size-fill" style="height:28%;"></div>
-            </div>
-            <span class="vert-slider-val" id="quick-size-val">24px</span>
-          </div>
-
-          <div class="vert-slider-group">
-            <span class="vert-slider-label">Opac</span>
-            <div class="vert-slider-track" id="quick-opacity-track" title="Drag vertically to adjust Brush Opacity">
-              <div class="vert-slider-fill" id="quick-opacity-fill" style="height:100%;"></div>
-            </div>
-            <span class="vert-slider-val" id="quick-opacity-val">100%</span>
+          <div class="dropdown-anchor">
+            <button type="button" class="opt-chip" id="btn-brush-popover" title="Brush Size &amp; Opacity Dropdown" style="padding:0 5px;height:24px;font-size:10px;font-family:var(--pc-font-mono);">
+              <span id="quick-size-val">24px</span> ▾
+            </button>
+            <div class="dropdown-popover down-left" id="popover-brush-settings" hidden style="min-width:225px;padding:10px;"></div>
           </div>
         </aside>
 
@@ -134,81 +140,80 @@
           <span class="pixel-loupe-hex" id="pixel-loupe-hex">#378EF0</span>
         </div>
 
-        <!-- Floating Contextual Action Bar (Selection / Crop / Perspective Crop / Slice / Filter Preview) -->
+        <!-- Floating Contextual Action Bar (Selection / Crop / Perspective Crop / Slice) -->
         <div class="floating-context-bar" id="floating-context-bar" hidden></div>
       </section>
 
-      <!-- Dynamic Tool Options Strip -->
+      <!-- Dynamic Tool Options Bar (Uses Dropdown Selects instead of horizontal sliding!) -->
       <div class="tool-options-strip" id="tool-options-strip"></div>
 
-      <!-- Primary Mobile Tool Carousel -->
-      <nav class="tools-Belt" id="tools-belt" aria-label="Editing Tools">
-        <button type="button" class="tool-item-btn active" data-tool="brush" id="tool-btn-brush">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/></svg>
-          <span>Brush</span>
-        </button>
-        <button type="button" class="tool-item-btn" data-tool="select" id="tool-btn-select">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="4 3"/></svg>
-          <span>Select</span>
-        </button>
-        <button type="button" class="tool-item-btn" data-tool="crop" id="tool-btn-crop">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>
-          <span>Crop</span>
-        </button>
-        <button type="button" class="tool-item-btn" data-tool="perspectiveCrop" id="tool-btn-perspective-crop">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polygon points="6 3 19 5 21 20 3 19"/><line x1="6" y1="3" x2="21" y2="20" stroke-dasharray="2 2"/><line x1="19" y1="5" x2="3" y2="19" stroke-dasharray="2 2"/></svg>
-          <span>Persp Crop</span>
-        </button>
-        <button type="button" class="tool-item-btn" data-tool="slice" id="tool-btn-slice">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 3h18v18H3z" stroke-dasharray="3 2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="11" y1="10" x2="11" y2="21"/></svg>
-          <span>Slice</span>
-        </button>
-        <button type="button" class="tool-item-btn" data-tool="sliceSelect" id="tool-btn-slice-select">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="3 2"/><path d="m11 11 4 9 1.8-3.8L20.5 14z" fill="currentColor"/></svg>
-          <span>Slice Sel</span>
-        </button>
-        <button type="button" class="tool-item-btn" data-tool="text" id="tool-btn-text">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
-          <span>Type/Font</span>
-        </button>
-        <button type="button" class="tool-item-btn" data-tool="move" id="tool-btn-move">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
-          <span>Transform</span>
-        </button>
-        <button type="button" class="tool-item-btn" data-tool="eraser" id="tool-btn-eraser">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>
-          <span>Eraser</span>
-        </button>
-        <button type="button" class="tool-item-btn" data-tool="heal" id="tool-btn-heal">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m18 2 4 4"/><path d="m17 7 3-3"/><path d="M19 9 8.7 19.3c-1 1-2.5 1-3.4 0l-.6-.6c-1-1-1-2.5 0-3.4L15 5"/><path d="m9 11 4 4"/></svg>
-          <span>Heal</span>
-        </button>
-        <button type="button" class="tool-item-btn" data-tool="fill" id="tool-btn-fill">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"/><path d="m5 2 5 5"/><path d="M2 13h15"/><path d="M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z"/></svg>
-          <span>Fill/Grad</span>
-        </button>
-        <button type="button" class="tool-item-btn" data-tool="tone" id="tool-btn-tone">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/></svg>
-          <span>Dodge/Burn</span>
-        </button>
-        <button type="button" class="tool-item-btn" data-tool="shape" id="tool-btn-shape">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="11" height="11" rx="2"/><circle cx="16" cy="16" r="5"/></svg>
-          <span>Shapes</span>
-        </button>
-        <button type="button" class="tool-item-btn" data-tool="eyedropper" id="tool-btn-eyedropper">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/></svg>
-          <span>Sampler</span>
-        </button>
-        <button type="button" class="tool-item-btn" data-tool="hand" id="tool-btn-hand">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>
-          <span>Pan/Zoom</span>
-        </button>
+      <!-- Grouped 6-Column Tool Bar with Upward Flyout Dropdowns (▴) — Zero Horizontal Scrolling! -->
+      <nav class="tools-Belt" id="tools-belt" aria-label="Editing Tool Groups">
+        <!-- Group 1: Paint & Retouch Flyout -->
+        <div class="tool-group-wrapper">
+          <button type="button" class="tool-item-btn active" data-group="paint" id="tool-group-paint">
+            <span class="flyout-caret">▴</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/></svg>
+            <span id="lbl-group-paint">Brush</span>
+          </button>
+          <div class="dropdown-popover up-left" id="flyout-paint" hidden></div>
+        </div>
+
+        <!-- Group 2: Select & Subject Flyout -->
+        <div class="tool-group-wrapper">
+          <button type="button" class="tool-item-btn" data-group="select" id="tool-group-select">
+            <span class="flyout-caret">▴</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="4 3"/></svg>
+            <span id="lbl-group-select">Select</span>
+          </button>
+          <div class="dropdown-popover up-left" id="flyout-select" hidden></div>
+        </div>
+
+        <!-- Group 3: Crop, Perspective Crop & Slice Flyout -->
+        <div class="tool-group-wrapper">
+          <button type="button" class="tool-item-btn" data-group="crop" id="tool-group-crop">
+            <span class="flyout-caret">▴</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>
+            <span id="lbl-group-crop">Crop/Slice</span>
+          </button>
+          <div class="dropdown-popover up-center" id="flyout-crop" hidden></div>
+        </div>
+
+        <!-- Group 4: Type & Custom Fonts Flyout -->
+        <div class="tool-group-wrapper">
+          <button type="button" class="tool-item-btn" data-group="text" id="tool-group-text">
+            <span class="flyout-caret">▴</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+            <span id="lbl-group-text">Type/Font</span>
+          </button>
+          <div class="dropdown-popover up-center" id="flyout-text" hidden></div>
+        </div>
+
+        <!-- Group 5: Transform & Move Flyout -->
+        <div class="tool-group-wrapper">
+          <button type="button" class="tool-item-btn" data-group="move" id="tool-group-move">
+            <span class="flyout-caret">▴</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
+            <span id="lbl-group-move">Transform</span>
+          </button>
+          <div class="dropdown-popover up-right" id="flyout-move" hidden></div>
+        </div>
+
+        <!-- Group 6: Fill, Gradient, Shapes & View Flyout -->
+        <div class="tool-group-wrapper">
+          <button type="button" class="tool-item-btn" data-group="fill" id="tool-group-fill">
+            <span class="flyout-caret">▴</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="11" height="11" rx="2"/><circle cx="16" cy="16" r="5"/></svg>
+            <span id="lbl-group-fill">Fill/Shape</span>
+          </button>
+          <div class="dropdown-popover up-right" id="flyout-fill" hidden></div>
+        </div>
       </nav>
 
-      <!-- Slide-Up Sheet Scrim Backdrop -->
+      <!-- Sheet Scrim Backdrop -->
       <div class="sheet-backdrop" id="sheet-backdrop"></div>
 
-      <!-- Slide-Up Mobile Bottom Sheet Container -->
+      <!-- Mobile Panel Sheet Container -->
       <section class="bottom-sheet" id="bottom-sheet" aria-live="polite">
         <div class="sheet-handle-bar" id="sheet-close-handle">
           <div class="sheet-handle-pill"></div>
@@ -244,7 +249,7 @@
         </button>
         <button type="button" class="nav-tab-btn" data-sheet="project" id="nav-btn-project">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-          <span>PSD &amp; App</span>
+          <span>Storage/PSD</span>
         </button>
       </footer>
 
@@ -266,7 +271,7 @@
       <div class="toast-container" id="toast-container"></div>
 
       <!-- Hidden File Inputs for Open Document, Place Layer Image, and Import Downloaded Fonts -->
-      <input type="file" id="file-input-open" accept=".psd,.pcraft,image/png,image/jpeg,image/webp,image/gif" hidden />
+      <input type="file" id="file-input-open" accept=".psd,image/png,image/jpeg,image/webp,image/gif" hidden />
       <input type="file" id="file-input-place-layer" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
       <input type="file" id="file-input-font" accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2,application/x-font-ttf,application/x-font-opentype" multiple hidden />
     </main>
