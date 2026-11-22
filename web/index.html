@@ -170,8 +170,11 @@
           <span class="pixel-loupe-hex" id="pixel-loupe-hex">#378EF0</span>
         </div>
 
-        <!-- Floating Contextual Action Bar (Selection / Crop / Perspective Crop / Slice) -->
+        <!-- Floating Contextual Action Bar (Selection / Move / Crop / Perspective Crop / Slice) -->
         <div class="floating-context-bar" id="floating-context-bar" hidden></div>
+
+        <!-- On-Canvas Precision Inspector, Layer Stack Picker, Refine Selection & View Controls Popover -->
+        <div class="canvas-control-popover" id="canvas-control-popover" hidden></div>
 
         <!-- Photoshop-Style Right-Side Docked Layers Panel with Toggle Hide/Show Side Arrow! -->
         <aside class="right-layers-drawer" id="right-layers-drawer" aria-label="Right Layers Panel">
@@ -372,9 +375,9 @@
       <div class="toast-container" id="toast-container"></div>
 
       <!-- Hidden File Inputs for Phone Gallery/Photos, Camera, Open PSD/Project, and Import Downloaded Fonts -->
-      <input type="file" id="file-input-open" accept="image/*,.psd,.psb,.psproj,.json" hidden />
-      <input type="file" id="file-input-phone-photo-open" accept="image/*" hidden />
-      <input type="file" id="file-input-place-layer" accept="image/*" multiple hidden />
+      <input type="file" id="file-input-open" accept="image/*,.png,.jpg,.jpeg,.webp,.avif,.gif,.bmp,.tif,.tiff,.tga,.ico,.svg,.ppm,.pgm,.heic,.heif,.dng,.cr2,.nef,.arw,.psd,.psb,.psproj,.json" hidden />
+      <input type="file" id="file-input-phone-photo-open" accept="image/*,.png,.jpg,.jpeg,.webp,.avif,.gif,.bmp,.tif,.tiff,.tga,.ico,.svg,.ppm,.heic,.heif,.dng,.cr2,.nef,.arw" hidden />
+      <input type="file" id="file-input-place-layer" accept="image/*,.png,.jpg,.jpeg,.webp,.avif,.gif,.bmp,.tif,.tiff,.tga,.ico,.svg,.ppm,.heic,.heif,.dng,.cr2,.nef,.arw" multiple hidden />
       <input type="file" id="file-input-phone-camera" accept="image/*" capture="environment" hidden />
       <input type="file" id="file-input-font" accept=".ttf,.otf,.woff,.woff2,font/*,application/octet-stream,*/*" multiple hidden />
     </main>

@@ -18,6 +18,7 @@ export class StudioDoc {
     this.title = title;
     this.layers = []; // bottom-to-top
     this.activeLayerId = null;
+    this.selectedLayerIds = [];
     this.editingMask = false;
 
     // Document-wide Photoshop Global Light (synced across Bevel & Emboss, Inner Shadow, Drop Shadow)
@@ -57,6 +58,157 @@ export class StudioDoc {
 
   get activeLayer() {
     return this.layers.find((l) => l.id === this.activeLayerId) || this.layers[this.layers.length - 1] || null;
+  }
+
+  getSelectedLayers() {
+    const valid = (this.selectedLayerIds || [])
+      .map((id) => this.layers.find((l) => l.id === id))
+      .filter(Boolean);
+    if (valid.length > 0) return valid;
+    return this.activeLayer ? [this.activeLayer] : [];
+  }
+
+  setSelectedLayerIds(ids = []) {
+    const validIds = ids.filter((id) => this.layers.some((l) => l.id === id));
+    this.selectedLayerIds = Array.from(new Set(validIds));
+    if (this.selectedLayerIds.length > 0 && !this.selectedLayerIds.includes(this.activeLayerId)) {
+      this.activeLayerId = this.selectedLayerIds[this.selectedLayerIds.length - 1];
+    }
+  }
+
+  toggleLayerSelection(layerId) {
+    if (!this.layers.some((l) => l.id === layerId)) return;
+    const current = this.getSelectedLayers().map((l) => l.id);
+    if (current.includes(layerId)) {
+      if (current.length > 1) {
+        this.setSelectedLayerIds(current.filter((id) => id !== layerId));
+      }
+    } else {
+      this.setSelectedLayerIds([...current, layerId]);
+      this.activeLayerId = layerId;
+    }
+  }
+
+  getCombinedTransformBounds(layers = this.getSelectedLayers()) {
+    const transformable = layers.filter((l) => l && l.kind !== 'adjustment' && !l.locked);
+    if (transformable.length === 0) return null;
+    if (transformable.length === 1) {
+      return this.getLayerTransformBounds(transformable[0]);
+    }
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const lyr of transformable) {
+      const b = this.getLayerTransformBounds(lyr);
+      if (!b) continue;
+      const cos = Math.abs(Math.cos(b.rotation || 0));
+      const sin = Math.abs(Math.sin(b.rotation || 0));
+      const hw = (b.w * cos + b.h * sin) / 2;
+      const hh = (b.w * sin + b.h * cos) / 2;
+      if (b.cx - hw < minX) minX = b.cx - hw;
+      if (b.cx + hw > maxX) maxX = b.cx + hw;
+      if (b.cy - hh < minY) minY = b.cy - hh;
+      if (b.cy + hh > maxY) maxY = b.cy + hh;
+    }
+    if (!Number.isFinite(minX)) return null;
+    return {
+      cx: (minX + maxX) / 2,
+      cy: (minY + maxY) / 2,
+      w: Math.max(12, maxX - minX),
+      h: Math.max(12, maxY - minY),
+      rotation: 0
+    };
+  }
+
+  selectLayersInRect(x, y, w, h) {
+    const rx0 = Math.min(x, x + w);
+    const ry0 = Math.min(y, y + h);
+    const rx1 = Math.max(x, x + w);
+    const ry1 = Math.max(y, y + h);
+    const hits = [];
+
+    for (let i = 0; i < this.layers.length; i++) {
+      const lyr = this.layers[i];
+      if (!lyr.visible || lyr.locked || lyr.kind === 'adjustment') continue;
+      // Skip solid full-canvas bottom background layer during marquee drag-select
+      if (i === 0 && !lyr.smartSource && lyr.kind === 'raster' && /background/i.test(lyr.name)) continue;
+      const b = this.getLayerTransformBounds(lyr);
+      if (!b) continue;
+      const cos = Math.abs(Math.cos(b.rotation || 0));
+      const sin = Math.abs(Math.sin(b.rotation || 0));
+      const hw = (b.w * cos + b.h * sin) / 2;
+      const hh = (b.w * sin + b.h * cos) / 2;
+      const lx0 = b.cx - hw, lx1 = b.cx + hw, ly0 = b.cy - hh, ly1 = b.cy + hh;
+      if (lx1 >= rx0 && lx0 <= rx1 && ly1 >= ry0 && ly0 <= ry1) {
+        hits.push(lyr.id);
+      }
+    }
+    if (hits.length > 0) {
+      this.setSelectedLayerIds(hits);
+      this.activeLayerId = hits[hits.length - 1];
+    }
+    return hits;
+  }
+
+  alignLayers(alignment, layers = this.getSelectedLayers()) {
+    const targets = layers.filter((l) => l && !l.locked && l.kind !== 'adjustment');
+    if (targets.length === 0) return false;
+    const ref =
+      targets.length > 1
+        ? this.getCombinedTransformBounds(targets)
+        : { cx: this.width / 2, cy: this.height / 2, w: this.width, h: this.height };
+    if (!ref) return false;
+
+    const refLeft = ref.cx - ref.w / 2;
+    const refRight = ref.cx + ref.w / 2;
+    const refTop = ref.cy - ref.h / 2;
+    const refBottom = ref.cy + ref.h / 2;
+
+    for (const lyr of targets) {
+      if (lyr.kind === 'raster' && !lyr.smartSource) this.ensureSmartSource(lyr);
+      const b = this.getLayerTransformBounds(lyr);
+      if (!b) continue;
+      const cos = Math.abs(Math.cos(b.rotation || 0));
+      const sin = Math.abs(Math.sin(b.rotation || 0));
+      const hw = (b.w * cos + b.h * sin) / 2;
+      const hh = (b.w * sin + b.h * cos) / 2;
+
+      let dx = 0;
+      let dy = 0;
+      if (alignment === 'left') dx = refLeft - (b.cx - hw);
+      else if (alignment === 'centerH') dx = ref.cx - b.cx;
+      else if (alignment === 'right') dx = refRight - (b.cx + hw);
+      else if (alignment === 'top') dy = refTop - (b.cy - hh);
+      else if (alignment === 'centerV') dy = ref.cy - b.cy;
+      else if (alignment === 'bottom') dy = refBottom - (b.cy + hh);
+
+      if (lyr.smartSource?.canvas) {
+        lyr.smartSource.cx += dx;
+        lyr.smartSource.cy += dy;
+        this.rasterizeSmartLayer(lyr);
+      } else if (lyr.kind === 'shape' && lyr.shapeData) {
+        lyr.shapeData.x += dx;
+        lyr.shapeData.y += dy;
+        this.rasterizeShapeLayer(lyr);
+      } else if (lyr.kind === 'text' && lyr.textData) {
+        lyr.textData.x += dx;
+        lyr.textData.y += dy;
+        this.rasterizeTextLayer(lyr);
+      }
+    }
+    return true;
+  }
+
+  reorderLayer(layerId, direction) {
+    const idx = this.layers.findIndex((l) => l.id === layerId);
+    if (idx < 0) return false;
+    let target = idx;
+    if (direction === 'front') target = this.layers.length - 1;
+    else if (direction === 'up') target = Math.min(this.layers.length - 1, idx + 1);
+    else if (direction === 'down') target = Math.max(0, idx - 1);
+    else if (direction === 'back') target = 0;
+    if (target === idx) return false;
+    const [lyr] = this.layers.splice(idx, 1);
+    this.layers.splice(target, 0, lyr);
+    return true;
   }
 
   get selectedSlice() {
@@ -891,16 +1043,99 @@ export class StudioDoc {
   }
 
   /**
-   * Selection Helpers
+   * Smart Canvas Selection Engine
+   * Supports Boolean Combine Modes (replace, add, subtract, intersect), Smart Object Select,
+   * Quick Selection Brush (edge-aware), Color Range, Magic Wand (contiguous/global, sample all),
+   * Layer Transparency Load, and Selection Modification (Expand, Contract, Smooth, Border, Feather).
    */
-  setRectSelection(x, y, w, h) {
+  computeMaskContour(mask) {
+    const contourPoints = [];
+    const W = this.width;
+    const H = this.height;
+    const step = Math.max(2, Math.round(Math.min(W, H) / 170));
+    for (let y = 0; y < H; y += step) {
+      const row = y * W;
+      const nextY = Math.min(H - 1, y + step);
+      const nextRow = nextY * W;
+      for (let x = 0; x < W; x += step) {
+        const cur = mask[row + x] > 127;
+        const nx = Math.min(W - 1, x + step);
+        const right = mask[row + nx] > 127;
+        const down = mask[nextRow + x] > 127;
+        if (cur !== right || cur !== down || (cur && (x === 0 || y === 0 || x + step >= W || y + step >= H))) {
+          contourPoints.push({ x, y });
+        }
+      }
+    }
+    return contourPoints;
+  }
+
+  getSelectionBounds() {
+    if (!this.hasSelection || !this.selectionMask) return null;
+    const mask = this.selectionMask;
+    const W = this.width;
+    const H = this.height;
+    let minX = W, minY = H, maxX = -1, maxY = -1;
+    for (let y = 0; y < H; y += 2) {
+      const row = y * W;
+      for (let x = 0; x < W; x += 2) {
+        if (mask[row + x] > 16) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (maxX < minX || maxY < minY) return null;
+    return { x: minX, y: minY, w: Math.max(1, maxX - minX + 2), h: Math.max(1, maxY - minY + 2) };
+  }
+
+  combineSelectionMask(newMask, mode = 'replace', directOutline = null) {
+    if (mode === 'replace' || !this.hasSelection || !this.selectionMask) {
+      if (mode === 'subtract') return;
+      if (mode === 'intersect' && !this.hasSelection) {
+        this.clearSelection();
+        return;
+      }
+      const outline = directOutline || { type: 'mask', contourPoints: this.computeMaskContour(newMask) };
+      this.updateSelectionFromMask(newMask, outline);
+      return;
+    }
+
+    const oldMask = this.selectionMask;
+    const out = new Uint8Array(oldMask.length);
+    if (mode === 'add') {
+      for (let i = 0; i < out.length; i++) out[i] = newMask[i] > oldMask[i] ? newMask[i] : oldMask[i];
+    } else if (mode === 'subtract') {
+      for (let i = 0; i < out.length; i++) {
+        const v = oldMask[i] - newMask[i];
+        out[i] = v > 0 ? v : 0;
+      }
+    } else if (mode === 'intersect') {
+      for (let i = 0; i < out.length; i++) out[i] = newMask[i] < oldMask[i] ? newMask[i] : oldMask[i];
+    } else {
+      out.set(newMask);
+    }
+    this.updateSelectionFromMask(out, { type: 'mask', contourPoints: this.computeMaskContour(out) });
+  }
+
+  getSampleSourceData(sampleAllLayers = true) {
+    if (sampleAllLayers || !this.activeLayer || this.activeLayer.kind === 'adjustment') {
+      this.compose();
+      return this.compositeCanvas.getContext('2d').getImageData(0, 0, this.width, this.height).data;
+    }
+    return this.activeLayer.canvas.getContext('2d').getImageData(0, 0, this.width, this.height).data;
+  }
+
+  setRectSelection(x, y, w, h, combineMode = 'replace') {
     const x0 = Math.max(0, Math.min(this.width, Math.round(Math.min(x, x + w))));
     const y0 = Math.max(0, Math.min(this.height, Math.round(Math.min(y, y + h))));
     const x1 = Math.max(0, Math.min(this.width, Math.round(Math.max(x, x + w))));
     const y1 = Math.max(0, Math.min(this.height, Math.round(Math.max(y, y + h))));
 
     if (x1 - x0 < 2 || y1 - y0 < 2) {
-      this.clearSelection();
+      if (combineMode === 'replace') this.clearSelection();
       return;
     }
 
@@ -911,16 +1146,16 @@ export class StudioDoc {
         mask[row + px] = 255;
       }
     }
-    this.updateSelectionFromMask(mask, { type: 'rect', x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+    this.combineSelectionMask(mask, combineMode, { type: 'rect', x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
   }
 
-  setEllipseSelection(x, y, w, h) {
+  setEllipseSelection(x, y, w, h, combineMode = 'replace') {
     const x0 = Math.min(x, x + w);
     const y0 = Math.min(y, y + h);
     const rw = Math.abs(w) / 2;
     const rh = Math.abs(h) / 2;
     if (rw < 2 || rh < 2) {
-      this.clearSelection();
+      if (combineMode === 'replace') this.clearSelection();
       return;
     }
     const cx = x0 + rw;
@@ -938,12 +1173,12 @@ export class StudioDoc {
         }
       }
     }
-    this.updateSelectionFromMask(mask, { type: 'ellipse', cx, cy, rw, rh });
+    this.combineSelectionMask(mask, combineMode, { type: 'ellipse', cx, cy, rw, rh });
   }
 
-  setLassoSelection(points) {
+  setLassoSelection(points, combineMode = 'replace') {
     if (!points || points.length < 3) {
-      this.clearSelection();
+      if (combineMode === 'replace') this.clearSelection();
       return;
     }
     const c = document.createElement('canvas');
@@ -964,63 +1199,474 @@ export class StudioDoc {
     for (let i = 0, p = 0; p < mask.length; p++, i += 4) {
       mask[p] = data[i + 3];
     }
-    this.updateSelectionFromMask(mask, { type: 'lasso', points: [...points] });
+    this.combineSelectionMask(mask, combineMode, { type: 'lasso', points: [...points] });
   }
 
-  selectMagicWand(startX, startY, tolerance = 32) {
+  selectMagicWand(startX, startY, tolerance = 32, opts = {}) {
+    const { contiguous = true, sampleAllLayers = true, combineMode = 'replace' } = opts;
     const x0 = Math.round(startX);
     const y0 = Math.round(startY);
     if (x0 < 0 || x0 >= this.width || y0 < 0 || y0 >= this.height) return;
 
-    this.compose();
-    const data = this.compositeCanvas.getContext('2d').getImageData(0, 0, this.width, this.height).data;
-    const sIdx = (y0 * this.width + x0) * 4;
+    const W = this.width;
+    const H = this.height;
+    const data = this.getSampleSourceData(sampleAllLayers);
+    const sIdx = (y0 * W + x0) * 4;
     const sr = data[sIdx], sg = data[sIdx + 1], sb = data[sIdx + 2], sa = data[sIdx + 3];
+    const mask = new Uint8Array(W * H);
 
-    const mask = new Uint8Array(this.width * this.height);
-    const visited = new Uint8Array(this.width * this.height);
-    const stack = [y0 * this.width + x0];
-    visited[y0 * this.width + x0] = 1;
-
-    while (stack.length > 0) {
-      const px = stack.pop();
-      mask[px] = 255;
-
-      const x = px % this.width;
-      const y = (px / this.width) | 0;
-      const neighbors = [];
-      if (x > 0) neighbors.push(px - 1);
-      if (x < this.width - 1) neighbors.push(px + 1);
-      if (y > 0) neighbors.push(px - this.width);
-      if (y < this.height - 1) neighbors.push(px + this.width);
-
-      for (const n of neighbors) {
-        if (visited[n]) continue;
-        const nIdx = n * 4;
+    if (!contiguous) {
+      for (let p = 0, i = 0; p < mask.length; p++, i += 4) {
         if (
-          Math.abs(data[nIdx] - sr) <= tolerance &&
-          Math.abs(data[nIdx + 1] - sg) <= tolerance &&
-          Math.abs(data[nIdx + 2] - sb) <= tolerance &&
-          Math.abs(data[nIdx + 3] - sa) <= tolerance
+          Math.abs(data[i] - sr) <= tolerance &&
+          Math.abs(data[i + 1] - sg) <= tolerance &&
+          Math.abs(data[i + 2] - sb) <= tolerance &&
+          Math.abs(data[i + 3] - sa) <= tolerance
         ) {
-          visited[n] = 1;
-          stack.push(n);
+          mask[p] = 255;
+        }
+      }
+    } else {
+      const visited = new Uint8Array(W * H);
+      const stack = new Int32Array(W * H);
+      let top = 0;
+      const startP = y0 * W + x0;
+      stack[top++] = startP;
+      visited[startP] = 1;
+
+      while (top > 0) {
+        const px = stack[--top];
+        mask[px] = 255;
+        const x = px % W;
+        const y = (px / W) | 0;
+
+        if (x > 0) {
+          const n = px - 1;
+          if (!visited[n]) {
+            const ni = n * 4;
+            if (Math.abs(data[ni] - sr) <= tolerance && Math.abs(data[ni + 1] - sg) <= tolerance && Math.abs(data[ni + 2] - sb) <= tolerance && Math.abs(data[ni + 3] - sa) <= tolerance) {
+              visited[n] = 1;
+              stack[top++] = n;
+            }
+          }
+        }
+        if (x < W - 1) {
+          const n = px + 1;
+          if (!visited[n]) {
+            const ni = n * 4;
+            if (Math.abs(data[ni] - sr) <= tolerance && Math.abs(data[ni + 1] - sg) <= tolerance && Math.abs(data[ni + 2] - sb) <= tolerance && Math.abs(data[ni + 3] - sa) <= tolerance) {
+              visited[n] = 1;
+              stack[top++] = n;
+            }
+          }
+        }
+        if (y > 0) {
+          const n = px - W;
+          if (!visited[n]) {
+            const ni = n * 4;
+            if (Math.abs(data[ni] - sr) <= tolerance && Math.abs(data[ni + 1] - sg) <= tolerance && Math.abs(data[ni + 2] - sb) <= tolerance && Math.abs(data[ni + 3] - sa) <= tolerance) {
+              visited[n] = 1;
+              stack[top++] = n;
+            }
+          }
+        }
+        if (y < H - 1) {
+          const n = px + W;
+          if (!visited[n]) {
+            const ni = n * 4;
+            if (Math.abs(data[ni] - sr) <= tolerance && Math.abs(data[ni + 1] - sg) <= tolerance && Math.abs(data[ni + 2] - sb) <= tolerance && Math.abs(data[ni + 3] - sa) <= tolerance) {
+              visited[n] = 1;
+              stack[top++] = n;
+            }
+          }
         }
       }
     }
 
-    const contourPoints = [];
-    const step = Math.max(2, Math.round(Math.min(this.width, this.height) / 140));
-    for (let y = step; y < this.height - step; y += step) {
-      for (let x = step; x < this.width - step; x += step) {
-        const p = y * this.width + x;
-        if ((mask[p] > 127) !== (mask[p + step] > 127) || (mask[p] > 127) !== (mask[p + step * this.width] > 127)) {
-          contourPoints.push({ x, y });
+    this.combineSelectionMask(mask, combineMode);
+  }
+
+  /**
+   * Smart Object Selector inside the Canvas!
+   * - Drag a loose box around any object -> models border backdrop colors & floods outside-in
+   *   to snap tightly around the foreground object inside the box (preserving interior highlights!).
+   * - Single tap on any object -> selects distinct transparent-backed object silhouette OR runs
+   *   adaptive edge-aware region growing from the tapped point.
+   */
+  selectObjectSmart(x, y, w, h, opts = {}) {
+    const { combineMode = 'replace', sensitivity = 36, sampleAllLayers = true } = opts;
+    const W = this.width;
+    const H = this.height;
+    const isBox = Math.abs(w) >= 14 && Math.abs(h) >= 14;
+
+    // Case 1: Single Smart Tap -> check if user tapped a distinct object layer (Photo/Shape/Text) first!
+    if (!isBox) {
+      const tx = Math.max(0, Math.min(W - 1, Math.round(x)));
+      const ty = Math.max(0, Math.min(H - 1, Math.round(y)));
+
+      // Check top-to-bottom for a non-full-canvas object layer at (tx, ty)
+      for (let li = this.layers.length - 1; li >= 0; li--) {
+        const lyr = this.layers[li];
+        if (!lyr.visible || lyr.kind === 'adjustment') continue;
+        const isBottomBg = li === 0 && !lyr.smartSource && lyr.kind === 'raster' && /background/i.test(lyr.name);
+        if (isBottomBg) continue;
+        const lData = lyr.canvas.getContext('2d').getImageData(0, 0, W, H).data;
+        if (lData[(ty * W + tx) * 4 + 3] > 20) {
+          // Verify this layer isn't an opaque full-canvas backdrop by checking corners
+          const cornersOpaque =
+            lData[3] > 240 &&
+            lData[(W - 1) * 4 + 3] > 240 &&
+            lData[((H - 1) * W) * 4 + 3] > 240 &&
+            lData[(W * H - 1) * 4 + 3] > 240;
+          if (!cornersOpaque) {
+            // Flood contiguous opaque pixels of this exact object!
+            const mask = new Uint8Array(W * H);
+            const visited = new Uint8Array(W * H);
+            const stack = new Int32Array(W * H);
+            let top = 0;
+            const startP = ty * W + tx;
+            stack[top++] = startP;
+            visited[startP] = 1;
+            while (top > 0) {
+              const p = stack[--top];
+              mask[p] = lData[p * 4 + 3];
+              const px = p % W;
+              const py = (p / W) | 0;
+              if (px > 0 && !visited[p - 1] && lData[(p - 1) * 4 + 3] > 18) { visited[p - 1] = 1; stack[top++] = p - 1; }
+              if (px < W - 1 && !visited[p + 1] && lData[(p + 1) * 4 + 3] > 18) { visited[p + 1] = 1; stack[top++] = p + 1; }
+              if (py > 0 && !visited[p - W] && lData[(p - W) * 4 + 3] > 18) { visited[p - W] = 1; stack[top++] = p - W; }
+              if (py < H - 1 && !visited[p + W] && lData[(p + W) * 4 + 3] > 18) { visited[p + W] = 1; stack[top++] = p + W; }
+            }
+            this.combineSelectionMask(mask, combineMode);
+            return { kind: 'layerObject', layerName: lyr.name };
+          }
+        }
+      }
+
+      // Fallback for single tap on opaque photo: Edge-aware adaptive smart flood!
+      this.applyQuickSelectBrush([{ x: tx, y: ty }], {
+        radius: 16,
+        tolerance: sensitivity,
+        combineMode,
+        sampleAllLayers
+      });
+      return { kind: 'smartRegion' };
+    }
+
+    // Case 2: Box Drag Smart Object Selection (GrabCut-style Border Background Stripping!)
+    const x0 = Math.max(0, Math.min(W - 1, Math.round(Math.min(x, x + w))));
+    const y0 = Math.max(0, Math.min(H - 1, Math.round(Math.min(y, y + h))));
+    const x1 = Math.max(0, Math.min(W - 1, Math.round(Math.max(x, x + w))));
+    const y1 = Math.max(0, Math.min(H - 1, Math.round(Math.max(y, y + h))));
+    const bw = x1 - x0 + 1;
+    const bh = y1 - y0 + 1;
+    if (bw < 6 || bh < 6) return null;
+
+    const data = this.getSampleSourceData(sampleAllLayers);
+
+    // 1. Sample perimeter colors around the box to model the surrounding backdrop
+    const borderSamples = [];
+    let transparentBorderCount = 0;
+    let totalBorderCount = 0;
+    const step = Math.max(1, Math.floor((bw + bh) / 140));
+    const samplePx = (px, py) => {
+      const i = (py * W + px) * 4;
+      totalBorderCount++;
+      if (data[i + 3] < 24) {
+        transparentBorderCount++;
+        return;
+      }
+      borderSamples.push([data[i], data[i + 1], data[i + 2]]);
+    };
+    for (let px = x0; px <= x1; px += step) {
+      samplePx(px, y0);
+      samplePx(px, y1);
+    }
+    for (let py = y0; py <= y1; py += step) {
+      samplePx(x0, py);
+      samplePx(x1, py);
+    }
+
+    const mask = new Uint8Array(W * H);
+
+    // Fast path: if the perimeter is mostly transparent, select crisp opaque pixels inside the box!
+    if (transparentBorderCount > totalBorderCount * 0.55) {
+      for (let py = y0; py <= y1; py++) {
+        const row = py * W;
+        for (let px = x0; px <= x1; px++) {
+          const a = data[(row + px) * 4 + 3];
+          if (a > 16) mask[row + px] = a;
+        }
+      }
+      this.combineSelectionMask(mask, combineMode);
+      return { kind: 'alphaObject' };
+    }
+
+    // Build up to 8 representative background color clusters from the box border
+    const bgClusters = [];
+    for (const col of borderSamples) {
+      let merged = false;
+      for (const cl of bgClusters) {
+        const dist = Math.hypot(col[0] - cl.r, col[1] - cl.g, col[2] - cl.b);
+        if (dist < 28) {
+          cl.r = (cl.r * cl.n + col[0]) / (cl.n + 1);
+          cl.g = (cl.g * cl.n + col[1]) / (cl.n + 1);
+          cl.b = (cl.b * cl.n + col[2]) / (cl.n + 1);
+          cl.n++;
+          merged = true;
+          break;
+        }
+      }
+      if (!merged && bgClusters.length < 8) {
+        bgClusters.push({ r: col[0], g: col[1], b: col[2], n: 1 });
+      }
+    }
+
+    const bgThresh = Math.max(18, sensitivity * 1.35);
+    const localW = bw;
+    const localH = bh;
+    const isBg = new Uint8Array(localW * localH);
+    const queue = new Int32Array(localW * localH);
+    let head = 0, tail = 0;
+
+    const minDistToBg = (r, g, b) => {
+      let best = 999;
+      for (let k = 0; k < bgClusters.length; k++) {
+        const cl = bgClusters[k];
+        const d = Math.hypot(r - cl.r, g - cl.g, b - cl.b);
+        if (d < best) best = d;
+      }
+      return best;
+    };
+
+    // Seed outside-in flood from every border pixel of the dragged box
+    const seedBorder = (lx, ly) => {
+      const lp = ly * localW + lx;
+      if (isBg[lp]) return;
+      const gi = ((y0 + ly) * W + (x0 + lx)) * 4;
+      if (data[gi + 3] < 24 || minDistToBg(data[gi], data[gi + 1], data[gi + 2]) <= bgThresh * 1.15) {
+        isBg[lp] = 1;
+        queue[tail++] = lp;
+      }
+    };
+    for (let lx = 0; lx < localW; lx++) {
+      seedBorder(lx, 0);
+      seedBorder(lx, localH - 1);
+    }
+    for (let ly = 0; ly < localH; ly++) {
+      seedBorder(0, ly);
+      seedBorder(localW - 1, ly);
+    }
+
+    // Outside-in flood strip of background pixels (preserves interior object details!)
+    const edgeStop = Math.max(24, sensitivity * 0.95);
+    while (head < tail) {
+      const lp = queue[head++];
+      const lx = lp % localW;
+      const ly = (lp / localW) | 0;
+      const ci = ((y0 + ly) * W + (x0 + lx)) * 4;
+      const cr = data[ci], cg = data[ci + 1], cb = data[ci + 2];
+
+      const tryNeighbor = (nx, ny) => {
+        const np = ny * localW + nx;
+        if (isBg[np]) return;
+        const ni = ((y0 + ny) * W + (x0 + nx)) * 4;
+        if (data[ni + 3] < 24) {
+          isBg[np] = 1;
+          queue[tail++] = np;
+          return;
+        }
+        const nr = data[ni], ng = data[ni + 1], nb = data[ni + 2];
+        const dBg = minDistToBg(nr, ng, nb);
+        const dStep = Math.hypot(nr - cr, ng - cg, nb - cb);
+        if (dBg <= bgThresh && dStep <= edgeStop) {
+          isBg[np] = 1;
+          queue[tail++] = np;
+        }
+      };
+
+      if (lx > 0) tryNeighbor(lx - 1, ly);
+      if (lx < localW - 1) tryNeighbor(lx + 1, ly);
+      if (ly > 0) tryNeighbor(lx, ly - 1);
+      if (ly < localH - 1) tryNeighbor(lx, ly + 1);
+    }
+
+    // Write foreground mask (everything inside box not stripped as background) + light 3x3 smoothing
+    let fgCount = 0;
+    for (let ly = 1; ly < localH - 1; ly++) {
+      for (let lx = 1; lx < localW - 1; lx++) {
+        const lp = ly * localW + lx;
+        let bgNeighbors = 0;
+        if (isBg[lp - 1]) bgNeighbors++;
+        if (isBg[lp + 1]) bgNeighbors++;
+        if (isBg[lp - localW]) bgNeighbors++;
+        if (isBg[lp + localW]) bgNeighbors++;
+        const fg = !isBg[lp] ? bgNeighbors < 4 : bgNeighbors <= 1;
+        if (fg) {
+          mask[(y0 + ly) * W + (x0 + lx)] = 255;
+          fgCount++;
         }
       }
     }
 
-    this.updateSelectionFromMask(mask, { type: 'mask', contourPoints });
+    // If box had uniform color (0 foreground found), select the clean box itself
+    if (fgCount < 16) {
+      for (let py = y0; py <= y1; py++) {
+        const row = py * W;
+        for (let px = x0; px <= x1; px++) mask[row + px] = 255;
+      }
+    }
+
+    this.combineSelectionMask(mask, combineMode);
+    return { kind: 'smartBox', fgCount };
+  }
+
+  /**
+   * Photoshop Quick Selection Brush — paints smart edge-aware selection regions along the user's stroke!
+   */
+  applyQuickSelectBrush(points, opts = {}) {
+    if (!points || points.length === 0) return;
+    const { radius = 24, tolerance = 34, combineMode = 'add', sampleAllLayers = true } = opts;
+    const W = this.width;
+    const H = this.height;
+    const data = this.getSampleSourceData(sampleAllLayers);
+
+    // Compute local bounding corridor around stroke for blazing 60fps performance
+    const margin = Math.max(radius * 5, 190);
+    let minX = W, minY = H, maxX = 0, maxY = 0;
+    for (const pt of points) {
+      if (pt.x < minX) minX = pt.x;
+      if (pt.x > maxX) maxX = pt.x;
+      if (pt.y < minY) minY = pt.y;
+      if (pt.y > maxY) maxY = pt.y;
+    }
+    const bx0 = Math.max(0, Math.floor(minX - margin));
+    const by0 = Math.max(0, Math.floor(minY - margin));
+    const bx1 = Math.min(W - 1, Math.ceil(maxX + margin));
+    const by1 = Math.min(H - 1, Math.ceil(maxY + margin));
+    const bw = bx1 - bx0 + 1;
+    const bh = by1 - by0 + 1;
+
+    // Sample representative seed colors under the painted stroke
+    const seedColors = [];
+    const visited = new Uint8Array(bw * bh);
+    const queue = new Int32Array(bw * bh);
+    let head = 0, tail = 0;
+    const mask = new Uint8Array(W * H);
+
+    const seedRad = Math.max(3, Math.round(radius * 0.45));
+    const sr2 = seedRad * seedRad;
+    for (const pt of points) {
+      const cx = Math.max(bx0, Math.min(bx1, Math.round(pt.x)));
+      const cy = Math.max(by0, Math.min(by1, Math.round(pt.y)));
+      const ci = (cy * W + cx) * 4;
+      const col = [data[ci], data[ci + 1], data[ci + 2], data[ci + 3]];
+      if (seedColors.length < 10 && !seedColors.some((s) => Math.hypot(s[0] - col[0], s[1] - col[1], s[2] - col[2], s[3] - col[3]) < 20)) {
+        seedColors.push(col);
+      }
+      for (let dy = -seedRad; dy <= seedRad; dy += 2) {
+        const py = cy + dy;
+        if (py < by0 || py > by1) continue;
+        for (let dx = -seedRad; dx <= seedRad; dx += 2) {
+          if (dx * dx + dy * dy > sr2) continue;
+          const px = cx + dx;
+          if (px < bx0 || px > bx1) continue;
+          const lp = (py - by0) * bw + (px - bx0);
+          if (!visited[lp]) {
+            visited[lp] = 1;
+            queue[tail++] = lp;
+            mask[py * W + px] = 255;
+          }
+        }
+      }
+    }
+
+    const colorThresh = Math.max(14, tolerance * 1.45);
+    const stepEdgeThresh = Math.max(18, tolerance * 0.9);
+
+    while (head < tail) {
+      const lp = queue[head++];
+      const lx = lp % bw;
+      const ly = (lp / bw) | 0;
+      const gx = bx0 + lx;
+      const gy = by0 + ly;
+      const ci = (gy * W + gx) * 4;
+      const cr = data[ci], cg = data[ci + 1], cb = data[ci + 2], ca = data[ci + 3];
+
+      const tryN = (nx, ny) => {
+        const np = ny * bw + nx;
+        if (visited[np]) return;
+        const ni = ((by0 + ny) * W + (bx0 + nx)) * 4;
+        const nr = data[ni], ng = data[ni + 1], nb = data[ni + 2], na = data[ni + 3];
+        // Stop cleanly at sharp local edge boundaries
+        const stepDist = Math.hypot(nr - cr, ng - cg, nb - cb, (na - ca) * 0.8);
+        if (stepDist > stepEdgeThresh) return;
+
+        // Check match against any seed color sampled along the brush stroke
+        let matched = false;
+        for (let s = 0; s < seedColors.length; s++) {
+          const sc = seedColors[s];
+          if (Math.hypot(nr - sc[0], ng - sc[1], nb - sc[2], (na - sc[3]) * 0.8) <= colorThresh) {
+            matched = true;
+            break;
+          }
+        }
+        if (matched) {
+          visited[np] = 1;
+          queue[tail++] = np;
+          mask[(by0 + ny) * W + (bx0 + nx)] = 255;
+        }
+      };
+
+      if (lx > 0) tryN(lx - 1, ly);
+      if (lx < bw - 1) tryN(lx + 1, ly);
+      if (ly > 0) tryN(lx, ly - 1);
+      if (ly < bh - 1) tryN(lx, ly + 1);
+    }
+
+    this.combineSelectionMask(mask, combineMode);
+  }
+
+  /**
+   * Photoshop Select -> Color Range (Global Smooth Color Selection with Fuzziness Falloff)
+   */
+  selectColorRange(startX, startY, opts = {}) {
+    const { fuzziness = 45, combineMode = 'replace', sampleAllLayers = true } = opts;
+    const x0 = Math.max(0, Math.min(this.width - 1, Math.round(startX)));
+    const y0 = Math.max(0, Math.min(this.height - 1, Math.round(startY)));
+    const W = this.width;
+    const H = this.height;
+    const data = this.getSampleSourceData(sampleAllLayers);
+    const si = (y0 * W + x0) * 4;
+    const sr = data[si], sg = data[si + 1], sb = data[si + 2], sa = data[si + 3];
+
+    const mask = new Uint8Array(W * H);
+    const inner = Math.max(6, fuzziness * 0.85);
+    const outer = Math.max(inner + 10, fuzziness * 1.45);
+    const span = outer - inner;
+
+    for (let p = 0, i = 0; p < mask.length; p++, i += 4) {
+      const d = Math.hypot(data[i] - sr, data[i + 1] - sg, data[i + 2] - sb, (data[i + 3] - sa) * 0.8);
+      if (d <= inner) mask[p] = 255;
+      else if (d < outer) mask[p] = Math.round(((outer - d) / span) * 255);
+    }
+    this.combineSelectionMask(mask, combineMode);
+  }
+
+  /**
+   * Photoshop Ctrl/Cmd+Click Layer Thumbnail -> Load Layer Transparency as Selection!
+   */
+  selectLayerTransparency(layer = this.activeLayer, combineMode = 'replace') {
+    if (!layer || layer.kind === 'adjustment') return false;
+    const W = this.width;
+    const H = this.height;
+    const data = layer.canvas.getContext('2d').getImageData(0, 0, W, H).data;
+    const mask = new Uint8Array(W * H);
+    for (let p = 0, i = 0; p < mask.length; p++, i += 4) {
+      mask[p] = data[i + 3];
+    }
+    this.combineSelectionMask(mask, combineMode);
+    return this.hasSelection;
   }
 
   selectSubject() {
@@ -1045,7 +1691,7 @@ export class StudioDoc {
 
     this.hasSelection = true;
     this.selectionMask = mask;
-    this.selectionOutline = outline || { type: 'mask' };
+    this.selectionOutline = outline || { type: 'mask', contourPoints: this.computeMaskContour(mask) };
 
     const sc = document.createElement('canvas');
     sc.width = this.width;
@@ -1083,7 +1729,7 @@ export class StudioDoc {
     }
     this.updateSelectionFromMask(inv, {
       type: 'mask',
-      contourPoints: this.selectionOutline?.contourPoints
+      contourPoints: this.computeMaskContour(inv)
     });
   }
 
@@ -1096,7 +1742,111 @@ export class StudioDoc {
     for (let i = 0, p = 0; p < newMask.length; p++, i += 4) {
       newMask[p] = blurred[i + 3];
     }
-    this.updateSelectionFromMask(newMask, this.selectionOutline);
+    this.updateSelectionFromMask(newMask, { type: 'mask', contourPoints: this.computeMaskContour(newMask) });
+  }
+
+  /**
+   * Photoshop Select -> Modify (Expand, Contract, Smooth, Border, Feather)
+   */
+  modifySelection(op = 'expand', radius = 6) {
+    if (!this.hasSelection || !this.selectionMask) return;
+    const r = Math.max(1, Math.min(40, Math.round(radius)));
+    if (op === 'feather') {
+      this.featherSelection(r);
+      return;
+    }
+
+    const W = this.width;
+    const H = this.height;
+    const src = this.selectionMask;
+
+    if (op === 'smooth') {
+      this.featherSelection(r);
+      if (!this.selectionMask) return;
+      const out = new Uint8Array(W * H);
+      for (let i = 0; i < out.length; i++) {
+        const v = this.selectionMask[i];
+        out[i] = v >= 145 ? 255 : v <= 110 ? 0 : Math.round(((v - 110) / 35) * 255);
+      }
+      this.updateSelectionFromMask(out, { type: 'mask', contourPoints: this.computeMaskContour(out) });
+      return;
+    }
+
+    // Separable 1D morphological max (expand) or min (contract) filter -> O(W*H) fast!
+    const morph1D = (input, isMax) => {
+      const tmp = new Uint8Array(W * H);
+      const out = new Uint8Array(W * H);
+      // Horizontal pass
+      for (let y = 0; y < H; y++) {
+        const row = y * W;
+        for (let x = 0; x < W; x++) {
+          let best = isMax ? 0 : 255;
+          const x0 = Math.max(0, x - r);
+          const x1 = Math.min(W - 1, x + r);
+          for (let k = x0; k <= x1; k++) {
+            const v = input[row + k];
+            if (isMax ? v > best : v < best) best = v;
+          }
+          tmp[row + x] = best;
+        }
+      }
+      // Vertical pass
+      for (let x = 0; x < W; x++) {
+        for (let y = 0; y < H; y++) {
+          let best = isMax ? 0 : 255;
+          const y0 = Math.max(0, y - r);
+          const y1 = Math.min(H - 1, y + r);
+          for (let k = y0; k <= y1; k++) {
+            const v = tmp[k * W + x];
+            if (isMax ? v > best : v < best) best = v;
+          }
+          out[y * W + x] = best;
+        }
+      }
+      return out;
+    };
+
+    if (op === 'expand') {
+      const expanded = morph1D(src, true);
+      this.updateSelectionFromMask(expanded, { type: 'mask', contourPoints: this.computeMaskContour(expanded) });
+    } else if (op === 'contract') {
+      const contracted = morph1D(src, false);
+      this.updateSelectionFromMask(contracted, { type: 'mask', contourPoints: this.computeMaskContour(contracted) });
+    } else if (op === 'border') {
+      const exp = morph1D(src, true);
+      const con = morph1D(src, false);
+      const ring = new Uint8Array(W * H);
+      for (let i = 0; i < ring.length; i++) {
+        const v = exp[i] - con[i];
+        ring[i] = v > 0 ? v : 0;
+      }
+      this.updateSelectionFromMask(ring, { type: 'mask', contourPoints: this.computeMaskContour(ring) });
+    }
+  }
+
+  fillSelection(hexColor = '#378ef0', opacity = 1.0) {
+    const layer = this.activeLayer;
+    if (!layer || layer.locked || layer.kind === 'adjustment') return false;
+    if (!this.editingMask && layer.smartSource) this.bakeSmartSource(layer);
+    const target = this.editingMask && layer.maskCanvas ? layer.maskCanvas : layer.canvas;
+
+    const fillBuf = document.createElement('canvas');
+    fillBuf.width = this.width;
+    fillBuf.height = this.height;
+    const fCtx = fillBuf.getContext('2d');
+    fCtx.fillStyle = hexColor;
+    fCtx.fillRect(0, 0, this.width, this.height);
+    if (this.hasSelection && this.selectionCanvas) {
+      fCtx.globalCompositeOperation = 'destination-in';
+      fCtx.drawImage(this.selectionCanvas, 0, 0);
+    }
+
+    const tCtx = target.getContext('2d');
+    tCtx.save();
+    tCtx.globalAlpha = Math.max(0, Math.min(1, opacity));
+    tCtx.drawImage(fillBuf, 0, 0);
+    tCtx.restore();
+    return true;
   }
 
   addMaskToActiveLayer(fromSelection = true) {
@@ -1558,6 +2308,62 @@ export class StudioSession {
         ctx.clearRect(0, 0, this.doc.width, this.doc.height);
       }
       this.doc.pushHistory('Clear Pixels');
+    });
+
+    this.registerCommand('selection.fromLayer', 'Load Layer Transparency as Selection', 'Select', ({ layerId = null, combineMode = 'replace' } = {}) => {
+      if (!this.doc) return;
+      const lyr = layerId ? this.doc.layers.find((l) => l.id === layerId) : this.doc.activeLayer;
+      if (lyr) this.doc.selectLayerTransparency(lyr, combineMode);
+    });
+
+    this.registerCommand('selection.modify', 'Modify Selection', 'Select', ({ op = 'expand', radius = 6 } = {}) => {
+      if (!this.doc) return;
+      this.doc.modifySelection(op, radius);
+    });
+
+    this.registerCommand('selection.fill', 'Fill Selection', 'Edit', ({ color = '#378ef0', opacity = 1.0 } = {}) => {
+      if (!this.doc) return;
+      if (this.doc.fillSelection(color, opacity)) {
+        this.doc.pushHistory('Fill Selection');
+      }
+    });
+
+    this.registerCommand('layer.align', 'Align Selected Layers', 'Layer', ({ alignment = 'centerH' } = {}) => {
+      if (!this.doc) return;
+      if (this.doc.alignLayers(alignment)) {
+        this.doc.pushHistory(`Align ${alignment}`);
+      }
+    });
+
+    this.registerCommand('layer.reorder', 'Reorder Layer', 'Layer', ({ layerId = null, direction = 'up' } = {}) => {
+      if (!this.doc) return;
+      const id = layerId || this.doc.activeLayerId;
+      if (this.doc.reorderLayer(id, direction)) {
+        this.doc.pushHistory(`Layer Order (${direction})`);
+      }
+    });
+
+    this.registerCommand('layer.mergeSelected', 'Merge Selected Layers', 'Layer', () => {
+      if (!this.doc) return;
+      const sel = this.doc.getSelectedLayers().filter((l) => l.kind !== 'adjustment');
+      if (sel.length < 2) return;
+      const indices = sel.map((l) => this.doc.layers.indexOf(l)).filter((i) => i >= 0).sort((a, b) => a - b);
+      if (indices.length < 2) return;
+
+      const merged = this.doc.createLayerObject({ name: `${sel[sel.length - 1].name} Merged`, kind: 'raster' });
+      const mCtx = merged.canvas.getContext('2d');
+      for (const idx of indices) {
+        const lyr = this.doc.layers[idx];
+        this.doc.renderSingleLayerToContext(lyr, mCtx, false);
+      }
+      const insertAt = indices[0];
+      for (let k = indices.length - 1; k >= 0; k--) {
+        this.doc.layers.splice(indices[k], 1);
+      }
+      this.doc.layers.splice(insertAt, 0, merged);
+      this.doc.activeLayerId = merged.id;
+      this.doc.selectedLayerIds = [merged.id];
+      this.doc.pushHistory('Merge Selected Layers');
     });
 
     this.registerCommand('layer.flatten', 'Flatten Image', 'Layer', () => {

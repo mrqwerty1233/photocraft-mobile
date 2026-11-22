@@ -105,9 +105,13 @@ public class MainActivity extends Activity {
                 intent.addCategory(Intent.CATEGORY_OPENABLE);
                 if (imageOnly) {
                     intent.setType("image/*");
-                    intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/png", "image/jpeg", "image/webp", "image/gif", "image/*"});
+                    intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+                            "image/png", "image/jpeg", "image/webp", "image/avif", "image/gif",
+                            "image/bmp", "image/tiff", "image/svg+xml", "image/x-icon",
+                            "image/heic", "image/heif", "image/*"
+                    });
                 } else {
-                    // Use */* so Android Gallery, Photos, and Downloads allow picking images, .psd, .ttf, .otf, and project files
+                    // Use */* so Android Gallery, Photos, and Downloads allow picking all image formats, .tga, .dng, .psd, .ttf, .otf, and project files
                     intent.setType("*/*");
                 }
 

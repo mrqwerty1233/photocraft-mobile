@@ -10,6 +10,7 @@ import { PsdCodec } from './engine/psd-codec.js';
 import { BrushEngine, BRUSH_PRESETS } from './engine/brush-engine.js';
 import { StudioDoc, StudioSession, BLEND_MODES } from './engine/studio-engine.js';
 import { SampleProjects } from './engine/sample-projects.js';
+import { ImageCodecs, EXPORT_FORMATS } from './engine/image-codecs.js';
 import { PhotoshopLayerStyleDialog } from './ui/layer-style-dialog.js';
 import { PhotoshopNewDocumentScreen } from './ui/new-document-screen.js';
 
@@ -154,10 +155,17 @@ class ProStudioMobileApp {
 
     // Active Tool & Sub-modes
     this.activeTool = 'brush';
-    this.selectMode = 'rect'; // 'rect' | 'ellipse' | 'lasso' | 'wand'
+    this.selectMode = 'object'; // 'object' | 'quickSelect' | 'colorRange' | 'wand' | 'rect' | 'ellipse' | 'lasso'
+    this.selectCombineMode = 'replace'; // 'replace' | 'add' | 'subtract' | 'intersect'
+    this.selectContiguous = true;
+    this.selectSampleAll = true;
+    this.quickSelectRadius = 26;
+    this.showSelectionTint = true;
     this.fillMode = 'bucket'; // 'bucket' | 'gradient'
     this.toneMode = 'dodge'; // 'dodge' | 'burn'
     this.shapeMode = 'rect'; // 'rect' | 'ellipse' | 'polygon' | 'star'
+    this.shapeStrokeWidth = 3;
+    this.shapeCornerRadius = 14;
     this.wandTolerance = 34;
 
     // Storage Permission & Export Location Settings
@@ -193,10 +201,16 @@ class ProStudioMobileApp {
     this.fgColor = '#378ef0';
     this.bgColor = '#f6f2e8';
 
-    // Viewport Camera (Zoom & Pan) + Dirty-Flag Render Scheduler
+    // Viewport Camera (Zoom & Pan) + View Overlays + Dirty-Flag Render Scheduler
     this.zoom = 1;
     this.panX = 0;
     this.panY = 0;
+    this.showCanvasGrid = false;
+    this.showRulers = false;
+    this.enableSmartGuides = true;
+    this.nudgeStep = 1;
+    this._canvasPopoverKind = null;
+    this._longPressTimer = null;
     this.renderPending = false;
     this._modalCancelHook = null;
     this.layerStyleDialog = new PhotoshopLayerStyleDialog(this);
@@ -238,6 +252,7 @@ class ProStudioMobileApp {
     // Move & Free Transform Scaler State (Photoshop CC exact defaults)
     this.transformLockAspect = true;
     this.moveAutoSelect = true;
+    this.moveMultiSelect = false;
     this.activeSmartGuides = [];
     this._cachedTransformBounds = null;
 
@@ -389,16 +404,7 @@ class ProStudioMobileApp {
       });
     }
 
-    // Floating brush pill visibility & offset when toolbar is docked left
-    const brushPill = document.getElementById('floating-brush-pill');
-    if (brushPill) {
-      brushPill.style.display = ws.showBrushPill === false ? 'none' : '';
-      if (!ws.toolbarFreeFloat && ws.toolbarPosition === 'left') {
-        brushPill.style.left = ws.toolbarCols === 2 ? '106px' : '64px';
-      } else {
-        brushPill.style.left = '';
-      }
-    }
+    this.syncBrushPillVisibility();
 
     const hudTop = document.getElementById('canvas-hud-top');
     if (hudTop) {
@@ -406,6 +412,27 @@ class ProStudioMobileApp {
     }
 
     this.requestRender();
+  }
+
+  syncBrushPillVisibility() {
+    const brushPill = document.getElementById('floating-brush-pill');
+    if (!brushPill) return;
+    const ws = this.workspaceSettings || {};
+    const paintTools = new Set(['brush', 'eraser', 'heal', 'tone', 'fill', 'shape', 'eyedropper']);
+    const shouldShow = ws.showBrushPill !== false && paintTools.has(this.activeTool);
+    brushPill.style.display = shouldShow ? '' : 'none';
+    const rulerOffset = this.showRulers ? 20 : 0;
+    if (!ws.toolbarFreeFloat && ws.toolbarPosition === 'left') {
+      brushPill.style.left = `${(ws.toolbarCols === 2 ? 106 : 64) + rulerOffset}px`;
+    } else {
+      brushPill.style.left = rulerOffset ? `${8 + rulerOffset}px` : '';
+    }
+    brushPill.style.top = rulerOffset ? `${52 + rulerOffset}px` : '';
+    const hudTop = document.getElementById('canvas-hud-top');
+    if (hudTop) {
+      hudTop.style.top = rulerOffset ? '24px' : '';
+      hudTop.style.left = rulerOffset ? '24px' : '';
+    }
   }
 
   initToolbarFreeFloatDrag() {
@@ -760,10 +787,16 @@ class ProStudioMobileApp {
       this.toggleDropdown('popover-brush-settings', () => this.populateBrushPopover());
     });
 
-    // HUD Badges
-    document.getElementById('hud-zoom-badge').addEventListener('click', () => this.fitCanvasToViewport());
+    // HUD Badges (Zoom/Grid/Rulers View Popover, Storage Folder, Active Layer Quick Picker)
+    document.getElementById('hud-zoom-badge').addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.openViewControlsPopover();
+    });
     document.getElementById('hud-storage-badge').addEventListener('click', () => this.openStorageSettingsModal());
-    document.getElementById('hud-active-layer').addEventListener('click', () => this.toggleSheet('layers'));
+    document.getElementById('hud-active-layer').addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleSheet('layers');
+    });
 
     // Color swatches & swap
     document.getElementById('btn-color-picker').addEventListener('click', () => this.openColorPickerModal());
@@ -778,10 +811,18 @@ class ProStudioMobileApp {
     // 6-Group Tool Bar Flyout Dropdowns (`▴`)
     this.initToolGroupFlyouts();
 
-    // Close open dropdowns when clicking outside
+    // Close open dropdowns & canvas control popover when clicking outside
     document.addEventListener('pointerdown', (e) => {
       if (!e.target.closest('.dropdown-anchor') && !e.target.closest('.tool-group-wrapper')) {
         this.closeAllDropdowns();
+      }
+      if (
+        !e.target.closest('#canvas-control-popover') &&
+        !e.target.closest('#floating-context-bar') &&
+        !e.target.closest('#tool-options-strip') &&
+        !e.target.closest('#hud-zoom-badge')
+      ) {
+        this.closeCanvasPopover();
       }
     });
 
@@ -993,20 +1034,55 @@ class ProStudioMobileApp {
 
   populateSelectDropdown() {
     const menu = document.getElementById('popover-select-menu');
-    menu.innerHTML = `<div class="dropdown-section-label">Subject AI &amp; Selection</div>`;
+    menu.innerHTML = `<div class="dropdown-section-label">Smart Canvas Selectors</div>`;
+    this.addDropdownMenuItem(menu, '🎯 Smart Object Select', 'Box/Tap', this.activeTool === 'select' && this.selectMode === 'object', () => {
+      this.selectMode = 'object';
+      this.selectTool('select');
+      this.showToast('Smart Object Select: Drag a box or tap any object!');
+    });
+    this.addDropdownMenuItem(menu, '🖌 Quick Select Smart Brush', 'Paint', this.activeTool === 'select' && this.selectMode === 'quickSelect', () => {
+      this.selectMode = 'quickSelect';
+      this.selectTool('select');
+      this.showToast('Quick Select Brush: Paint over any area to snap edges!');
+    });
+    this.addDropdownMenuItem(menu, '🎨 Color Range Select', 'Global', this.activeTool === 'select' && this.selectMode === 'colorRange', () => {
+      this.selectMode = 'colorRange';
+      this.selectTool('select');
+      this.showToast('Color Range: Tap any color on canvas!');
+    });
     this.addDropdownMenuItem(menu, '✨ Select ➔ Subject', 'Auto AI', false, () => {
       this.session.dispatch('selection.subject');
       this.showToast('Select ➔ Subject applied!');
     });
-    this.addDropdownMenuItem(menu, '✂️ Cutout Subject to New Layer', '⌘J', false, () => {
+    this.addDropdownMenuItem(menu, '🎯 Select Active Layer Shape', 'Alpha', false, () => {
+      this.session.dispatch('selection.fromLayer');
+      this.showToast('Loaded Active Layer Shape as Selection');
+    });
+
+    const d0 = document.createElement('div');
+    d0.className = 'dropdown-divider';
+    menu.appendChild(d0);
+
+    this.addDropdownMenuItem(menu, '✂️ Cutout to New Layer', '⌘J', false, () => {
       if (!this.session.doc?.hasSelection) this.session.dispatch('selection.subject');
       this.session.dispatch('layer.viaCopy');
-      this.showToast('Extracted Subject Cutout to New Layer!');
+      this.showToast('Extracted Cutout to New Layer!');
     });
     this.addDropdownMenuItem(menu, '🎭 Selection to Layer Mask', 'Mask', false, () => {
       if (!this.session.doc?.hasSelection) this.session.dispatch('selection.subject');
       this.session.dispatch('layer.addMask', { fromSelection: true });
       this.showToast('Created Layer Mask from Selection');
+    });
+    this.addDropdownMenuItem(menu, '⚙ Refine Edge (Expand/Feather)...', '', false, () => {
+      this.openSelectionRefinePopover();
+    });
+    this.addDropdownMenuItem(menu, '🪣 Fill Selection with FG', '', false, () => {
+      this.session.dispatch('selection.fill', { color: this.fgColor, opacity: 1 });
+      this.showToast('Filled Selection');
+    });
+    this.addDropdownMenuItem(menu, '⌫ Clear Selected Pixels', 'Del', false, () => {
+      this.session.dispatch('selection.clearPixels');
+      this.showToast('Cleared Selected Pixels');
     });
 
     const d = document.createElement('div');
@@ -1015,10 +1091,6 @@ class ProStudioMobileApp {
 
     this.addDropdownMenuItem(menu, '⬜ Select All', '⌘A', false, () => this.session.dispatch('selection.all'));
     this.addDropdownMenuItem(menu, '⇄ Invert Selection', '⇧⌘I', false, () => this.session.dispatch('selection.invert'));
-    this.addDropdownMenuItem(menu, '☁️ Feather Selection (8 px)', '', false, () => {
-      this.session.dispatch('selection.feather', { radius: 8 });
-      this.showToast('Selection Feathered');
-    });
     this.addDropdownMenuItem(menu, '✕ Deselect', '⌘D', false, () => this.session.dispatch('selection.deselect'));
   }
 
@@ -1137,15 +1209,36 @@ class ProStudioMobileApp {
       });
     });
 
-    // 2. Select Group Flyout
+    // 2. Smart Select & Marquee Group Flyout
     document.getElementById('tool-group-select').addEventListener('click', (e) => {
       e.stopPropagation();
       this.toggleDropdown('flyout-select', (menu) => {
-        menu.innerHTML = `<div class="dropdown-section-label">Selection &amp; Subject AI</div>`;
+        menu.innerHTML = `<div class="dropdown-section-label">Smart Canvas Selectors</div>`;
+        this.addDropdownMenuItem(menu, '🎯 Smart Object Select', 'W', this.activeTool === 'select' && this.selectMode === 'object', () => {
+          this.selectMode = 'object';
+          this.selectTool('select');
+          this.showToast('Smart Object Select: Drag a box or tap any object!');
+        });
+        this.addDropdownMenuItem(menu, '🖌 Quick Select Brush', 'W', this.activeTool === 'select' && this.selectMode === 'quickSelect', () => {
+          this.selectMode = 'quickSelect';
+          this.selectTool('select');
+          this.showToast('Quick Select Brush: Paint over any area!');
+        });
+        this.addDropdownMenuItem(menu, '🎨 Color Range Select', '', this.activeTool === 'select' && this.selectMode === 'colorRange', () => {
+          this.selectMode = 'colorRange';
+          this.selectTool('select');
+        });
         this.addDropdownMenuItem(menu, '✨ Select ➔ Subject', 'Auto AI', false, () => {
           this.selectTool('select');
           this.session.dispatch('selection.subject');
           this.showToast('Select ➔ Subject applied!');
+        });
+        const div = document.createElement('div');
+        div.className = 'dropdown-divider';
+        menu.appendChild(div);
+        this.addDropdownMenuItem(menu, '🪄 Magic Wand', 'W', this.activeTool === 'select' && this.selectMode === 'wand', () => {
+          this.selectMode = 'wand';
+          this.selectTool('select');
         });
         this.addDropdownMenuItem(menu, '▭ Rectangular Marquee', 'M', this.activeTool === 'select' && this.selectMode === 'rect', () => {
           this.selectMode = 'rect';
@@ -1157,10 +1250,6 @@ class ProStudioMobileApp {
         });
         this.addDropdownMenuItem(menu, '➰ Freehand Lasso', 'L', this.activeTool === 'select' && this.selectMode === 'lasso', () => {
           this.selectMode = 'lasso';
-          this.selectTool('select');
-        });
-        this.addDropdownMenuItem(menu, '🪄 Magic Wand', 'W', this.activeTool === 'select' && this.selectMode === 'wand', () => {
-          this.selectMode = 'wand';
           this.selectTool('select');
         });
       });
@@ -1489,6 +1578,7 @@ class ProStudioMobileApp {
       }
     }
     this.hapticTick();
+    this.syncBrushPillVisibility();
     this.renderTopTypeBar();
     this.renderToolOptionsStrip();
     this.renderFloatingContextBar();
@@ -2219,28 +2309,127 @@ class ProStudioMobileApp {
         },
         'Brush Opacity'
       );
+
+      // Flow Dropdown
+      addSelectDropdown(
+        [100, 80, 60, 40, 20].map((f) => ({ id: f, label: `Flow: ${f}%` })),
+        [100, 80, 60, 40, 20].reduce((prev, curr) =>
+          Math.abs(curr - (this.brush.flow ?? 90)) < Math.abs(prev - (this.brush.flow ?? 90)) ? curr : prev
+        ),
+        (val) => {
+          this.brush.flow = Number(val);
+        },
+        'Brush Flow'
+      );
+
+      // Hardness Dropdown
+      addSelectDropdown(
+        [100, 75, 50, 25, 0].map((h) => ({ id: h, label: `Hard: ${h}%` })),
+        [100, 75, 50, 25, 0].reduce((prev, curr) =>
+          Math.abs(curr - (this.brush.hardness ?? 70)) < Math.abs(prev - (this.brush.hardness ?? 70)) ? curr : prev
+        ),
+        (val) => {
+          this.brush.hardness = Number(val);
+        },
+        'Brush Hardness'
+      );
     } else if (this.activeTool === 'select') {
+      // Smart Selector & Marquee Mode Dropdown
       addSelectDropdown(
         [
-          { id: 'rect', label: 'Mode: Rect Marquee' },
-          { id: 'ellipse', label: 'Mode: Ellipse Marquee' },
-          { id: 'lasso', label: 'Mode: Freehand Lasso' },
-          { id: 'wand', label: 'Mode: Magic Wand' }
+          { id: 'object', label: '🎯 Smart Object' },
+          { id: 'quickSelect', label: '🖌 Quick Brush' },
+          { id: 'colorRange', label: '🎨 Color Range' },
+          { id: 'wand', label: '🪄 Magic Wand' },
+          { id: 'rect', label: '▭ Rect Marquee' },
+          { id: 'ellipse', label: '◯ Ellipse' },
+          { id: 'lasso', label: '➰ Lasso' }
         ],
         this.selectMode,
         (val) => {
           this.selectMode = val;
           this.renderToolOptionsStrip();
-        }
+        },
+        'Smart Selection Tool Mode'
       );
-      addButton('✨ Select Subject', true, () => {
+
+      // Boolean Combine Segmented Buttons (New / +Add / -Subtract / ∩Intersect)
+      const seg = document.createElement('div');
+      seg.className = 'opt-seg-group';
+      seg.title = 'Selection Mode: New, Add (+), Subtract (−), Intersect (∩)';
+      for (const cm of [
+        { id: 'replace', lbl: '□', ttl: 'New Selection' },
+        { id: 'add', lbl: '+', ttl: 'Add to Selection' },
+        { id: 'subtract', lbl: '−', ttl: 'Subtract from Selection' },
+        { id: 'intersect', lbl: '∩', ttl: 'Intersect with Selection' }
+      ]) {
+        const sb = document.createElement('button');
+        sb.type = 'button';
+        sb.className = `opt-seg-btn${this.selectCombineMode === cm.id ? ' active' : ''}`;
+        sb.textContent = cm.lbl;
+        sb.title = cm.ttl;
+        sb.dataset.combineMode = cm.id;
+        sb.addEventListener('click', () => {
+          this.selectCombineMode = cm.id;
+          this.renderToolOptionsStrip();
+        });
+        seg.appendChild(sb);
+      }
+      strip.appendChild(seg);
+
+      // Sensitivity / Tolerance for smart selectors
+      if (['object', 'quickSelect', 'colorRange', 'wand'].includes(this.selectMode)) {
+        addSelectDropdown(
+          [12, 22, 34, 48, 65, 85].map((t) => ({ id: t, label: `Sens: ${t}` })),
+          [12, 22, 34, 48, 65, 85].reduce((prev, curr) =>
+            Math.abs(curr - this.wandTolerance) < Math.abs(prev - this.wandTolerance) ? curr : prev
+          ),
+          (val) => {
+            this.wandTolerance = Number(val);
+          },
+          'Smart Selector Tolerance / Sensitivity'
+        );
+      }
+
+      if (this.selectMode === 'quickSelect') {
+        addSelectDropdown(
+          [14, 24, 36, 54, 80].map((r) => ({ id: r, label: `Brush: ${r}px` })),
+          [14, 24, 36, 54, 80].reduce((prev, curr) =>
+            Math.abs(curr - this.quickSelectRadius) < Math.abs(prev - this.quickSelectRadius) ? curr : prev
+          ),
+          (val) => {
+            this.quickSelectRadius = Number(val);
+          },
+          'Quick Select Brush Radius'
+        );
+      }
+
+      if (this.selectMode === 'wand') {
+        addButton(this.selectContiguous ? '☑ Contig' : '☐ Contig', this.selectContiguous, () => {
+          this.selectContiguous = !this.selectContiguous;
+          this.renderToolOptionsStrip();
+        });
+      }
+
+      addButton(this.selectSampleAll ? '☑ All Lyr' : '☐ Active Lyr', this.selectSampleAll, () => {
+        this.selectSampleAll = !this.selectSampleAll;
+        this.renderToolOptionsStrip();
+      });
+
+      addButton(this.showSelectionTint ? '🔵 Overlay' : '○ Ants', this.showSelectionTint, () => {
+        this.showSelectionTint = !this.showSelectionTint;
+        this.renderToolOptionsStrip();
+        this.requestRender();
+      });
+
+      addButton('✨ Subject', true, () => {
         this.session.dispatch('selection.subject');
         this.showToast('Select ➔ Subject applied!');
       });
-      addButton('✂️ Cutout', false, () => {
-        if (!this.session.doc?.hasSelection) this.session.dispatch('selection.subject');
-        this.session.dispatch('layer.viaCopy');
-        this.showToast('Extracted Subject to New Layer');
+
+      addButton('🎯 Layer', false, () => {
+        this.session.dispatch('selection.fromLayer', { combineMode: this.selectCombineMode });
+        this.showToast('Selected Active Layer Shape');
       });
     } else if (
       this.activeTool === 'crop' ||
@@ -2369,7 +2558,16 @@ class ProStudioMobileApp {
         this.moveAutoSelect = !this.moveAutoSelect;
         this.renderToolOptionsStrip();
       });
-      addButton(this.transformLockAspect ? '🔗 Lock Ratio' : '🔓 Free Scale', this.transformLockAspect, () => {
+      addButton(this.moveMultiSelect ? '☑ Multi-Sel' : '☐ Multi-Sel', this.moveMultiSelect, () => {
+        this.moveMultiSelect = !this.moveMultiSelect;
+        if (!this.moveMultiSelect && this.session.doc?.activeLayerId) {
+          this.session.doc.setSelectedLayerIds([this.session.doc.activeLayerId]);
+        }
+        this.renderToolOptionsStrip();
+        this.renderFloatingContextBar();
+        this.requestRender();
+      });
+      addButton(this.transformLockAspect ? '🔗 Ratio' : '🔓 Free', this.transformLockAspect, () => {
         this.transformLockAspect = !this.transformLockAspect;
         this.renderToolOptionsStrip();
       });
@@ -2400,6 +2598,15 @@ class ProStudioMobileApp {
           this.renderToolOptionsStrip();
         }
       );
+      addSelectDropdown(
+        [100, 80, 60, 40, 20].map((o) => ({ id: o, label: `Opac: ${o}%` })),
+        [100, 80, 60, 40, 20].reduce((prev, curr) =>
+          Math.abs(curr - this.brush.opacity) < Math.abs(prev - this.brush.opacity) ? curr : prev
+        ),
+        (val) => {
+          this.brush.opacity = Number(val);
+        }
+      );
     } else if (this.activeTool === 'tone') {
       addSelectDropdown(
         [
@@ -2425,12 +2632,27 @@ class ProStudioMobileApp {
           this.shapeMode = val;
         }
       );
-      addButton('+ Add Shape Layer', true, () => {
+      addSelectDropdown(
+        [0, 2, 3, 6, 10, 16].map((sw) => ({ id: sw, label: `Stroke: ${sw}px` })),
+        this.shapeStrokeWidth,
+        (val) => {
+          this.shapeStrokeWidth = Number(val);
+        }
+      );
+      addSelectDropdown(
+        [0, 8, 14, 24, 48].map((r) => ({ id: r, label: `Radius: ${r}px` })),
+        this.shapeCornerRadius,
+        (val) => {
+          this.shapeCornerRadius = Number(val);
+        }
+      );
+      addButton('+ Add Shape', true, () => {
         this.session.dispatch('shape.addLayer', {
           shapeType: this.shapeMode,
           fill: this.fgColor,
           stroke: this.bgColor,
-          strokeWidth: 4
+          strokeWidth: this.shapeStrokeWidth,
+          cornerRadius: this.shapeCornerRadius
         });
       });
     } else if (this.activeTool === 'eyedropper') {
@@ -2544,8 +2766,13 @@ class ProStudioMobileApp {
 
   getActiveTransformBounds() {
     const doc = this.session.doc;
-    const layer = doc?.activeLayer;
-    if (!doc || !layer || layer.kind === 'adjustment') return null;
+    if (!doc) return null;
+    const selected = doc.getSelectedLayers().filter((l) => l && l.kind !== 'adjustment' && !l.locked);
+    if (selected.length > 1) {
+      return doc.getCombinedTransformBounds(selected);
+    }
+    const layer = selected[0] || doc.activeLayer;
+    if (!layer || layer.kind === 'adjustment') return null;
 
     if (layer.smartSource?.canvas || layer.kind === 'shape' || layer.kind === 'text') {
       return doc.getLayerTransformBounds(layer);
@@ -2709,35 +2936,39 @@ class ProStudioMobileApp {
 
   nudgeActiveLayer(dx, dy) {
     const doc = this.session.doc;
-    const layer = doc?.activeLayer;
-    if (!doc || !layer || layer.kind === 'adjustment' || layer.locked) return;
+    if (!doc) return;
+    const targets = doc.getSelectedLayers().filter((l) => l && l.kind !== 'adjustment' && !l.locked);
+    if (targets.length === 0) return;
 
-    if (layer.smartSource?.canvas) {
-      layer.smartSource.cx += dx;
-      layer.smartSource.cy += dy;
-      doc.rasterizeSmartLayer(layer);
-    } else if (layer.kind === 'text' && layer.textData) {
-      layer.textData.x += dx;
-      layer.textData.y += dy;
-      doc.rasterizeTextLayer(layer);
-    } else if (layer.kind === 'shape' && layer.shapeData) {
-      layer.shapeData.x += dx;
-      layer.shapeData.y += dy;
-      doc.rasterizeShapeLayer(layer);
-    } else {
-      const ss = doc.ensureSmartSource(layer);
-      if (ss) {
-        ss.cx += dx;
-        ss.cy += dy;
+    for (const layer of targets) {
+      if (layer.smartSource?.canvas) {
+        layer.smartSource.cx += dx;
+        layer.smartSource.cy += dy;
         doc.rasterizeSmartLayer(layer);
+      } else if (layer.kind === 'text' && layer.textData) {
+        layer.textData.x += dx;
+        layer.textData.y += dy;
+        doc.rasterizeTextLayer(layer);
+      } else if (layer.kind === 'shape' && layer.shapeData) {
+        layer.shapeData.x += dx;
+        layer.shapeData.y += dy;
+        doc.rasterizeShapeLayer(layer);
+      } else {
+        const ss = doc.ensureSmartSource(layer);
+        if (ss) {
+          ss.cx += dx;
+          ss.cy += dy;
+          doc.rasterizeSmartLayer(layer);
+        }
       }
     }
-    doc.pushHistory('Nudge Layer');
+    this._cachedTransformBounds = null;
+    doc.pushHistory(targets.length > 1 ? `Nudge ${targets.length} Layers` : 'Nudge Layer');
     this.session.notify('layer.moved');
   }
 
   /* ==========================================================================
-   * Floating Contextual Action Bar
+   * Floating Contextual Action Bar & On-Canvas Precision Control Popovers
    * ========================================================================== */
   renderFloatingContextBar() {
     const bar = document.getElementById('floating-context-bar');
@@ -2749,12 +2980,16 @@ class ProStudioMobileApp {
 
     bar.innerHTML = '';
 
-    const addBtn = (label, cls, onClick) => {
+    const addBtn = (label, cls, onClick, id = '') => {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = `ctx-btn ${cls || ''}`.trim();
+      if (id) btn.id = id;
       btn.textContent = label;
-      btn.addEventListener('click', onClick);
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        onClick(e);
+      });
       bar.appendChild(btn);
     };
 
@@ -2810,23 +3045,582 @@ class ProStudioMobileApp {
 
     if (doc.hasSelection) {
       bar.hidden = false;
-      addBtn('✂️ Cutout to Layer (⌘J)', 'primary', () => {
+      addBtn('✂️ Cutout', 'primary', () => {
         this.session.dispatch('layer.viaCopy');
-        this.showToast('Subject Cutout copied to new layer!');
-      });
-      addBtn('To Layer Mask', 'primary', () => {
+        this.showToast('Cutout copied to new layer!');
+      }, 'ctx-sel-cutout');
+      addBtn('🎭 Mask', 'primary', () => {
         this.session.dispatch('layer.addMask', { fromSelection: true });
         this.showToast('Created Layer Mask from Selection');
-      });
-      addBtn('Feather', '', () => {
-        this.session.dispatch('selection.feather', { radius: 6 });
-        this.showToast('Selection Feathered');
-      });
-      addBtn('Deselect', '', () => this.session.dispatch('selection.deselect'));
+      }, 'ctx-sel-mask');
+      addBtn('🪣 Fill', '', () => {
+        this.session.dispatch('selection.fill', { color: this.fgColor, opacity: 1 });
+        this.showToast('Filled Selection');
+      }, 'ctx-sel-fill');
+      addBtn('⌫ Erase', '', () => {
+        this.session.dispatch('selection.clearPixels');
+        this.showToast('Erased Selected Pixels');
+      }, 'ctx-sel-erase');
+      addBtn('⚙ Refine', '', () => this.openSelectionRefinePopover(), 'ctx-sel-refine');
+      addBtn('⇄', '', () => this.session.dispatch('selection.invert'), 'ctx-sel-invert');
+      addBtn('✕', 'danger', () => {
+        this.closeCanvasPopover();
+        this.session.dispatch('selection.deselect');
+      }, 'ctx-sel-deselect');
+      return;
+    }
+
+    if (this.activeTool === 'move' && doc.activeLayer) {
+      bar.hidden = false;
+      const selCount = doc.getSelectedLayers().length;
+      addBtn('⚙ Exact', 'primary', () => this.openPrecisionInspector(), 'ctx-move-exact');
+      addBtn(selCount > 1 ? `📚 Pick (${selCount})` : '📚 Pick', '', () => this.openCanvasObjectPicker(null, null), 'ctx-move-pick');
+      addBtn('fx', '', () => this.openLayerStylesModal(), 'ctx-move-fx');
+      addBtn('Dup', '', () => {
+        this.session.dispatch('layer.duplicate');
+        this.showToast('Duplicated Layer');
+      }, 'ctx-move-dup');
+      if (selCount > 1) {
+        addBtn(`⊞ Merge (${selCount})`, 'primary', () => {
+          this.session.dispatch('layer.mergeSelected');
+          this.showToast(`Merged ${selCount} Layers`);
+        }, 'ctx-move-merge');
+      }
+      addBtn('🗑', 'danger', () => {
+        if (doc.layers.length <= 1) {
+          this.showToast('Cannot delete the only layer');
+          return;
+        }
+        this.session.dispatch('layer.delete');
+        this.showToast('Deleted Layer');
+      }, 'ctx-move-delete');
       return;
     }
 
     bar.hidden = true;
+  }
+
+  closeCanvasPopover() {
+    const pop = document.getElementById('canvas-control-popover');
+    if (pop) {
+      pop.hidden = true;
+      pop.classList.remove('top-right-anchor');
+    }
+    this._canvasPopoverKind = null;
+  }
+
+  /**
+   * On-Canvas Precision Inspector: Exact X/Y/W/H/Angle/Opacity, Blend Mode,
+   * 1px/10px D-Pad Nudger, 6-Way Align, Z-Order, and Live Shape/Text Controls!
+   */
+  openPrecisionInspector() {
+    const pop = document.getElementById('canvas-control-popover');
+    const doc = this.session.doc;
+    if (!pop || !doc) return;
+    if (!pop.hidden && this._canvasPopoverKind === 'precision') {
+      this.closeCanvasPopover();
+      return;
+    }
+
+    const renderBody = () => {
+      const lyr = doc.activeLayer;
+      const selLayers = doc.getSelectedLayers();
+      const bounds = this.getActiveTransformBounds();
+      if (!lyr || !bounds) {
+        this.closeCanvasPopover();
+        return;
+      }
+
+      const xVal = Math.round(bounds.cx - bounds.w / 2);
+      const yVal = Math.round(bounds.cy - bounds.h / 2);
+      const wVal = Math.round(bounds.w);
+      const hVal = Math.round(bounds.h);
+      const degVal = Math.round(((bounds.rotation || 0) * 180) / Math.PI);
+      const opVal = Math.round((lyr.opacity ?? 1) * 100);
+
+      pop.classList.remove('top-right-anchor');
+      pop.innerHTML = `
+        <div class="ccp-header">
+          <span class="ccp-title">⚙ Precision Controls · ${selLayers.length > 1 ? `${selLayers.length} Layers` : lyr.name}</span>
+          <button type="button" class="ccp-btn" id="ccp-close-btn" style="height:22px;padding:0 7px;">✕</button>
+        </div>
+        <div class="ccp-grid-4">
+          <div class="ccp-num-field"><label>X (px)</label><input type="number" id="ccp-x" value="${xVal}" /></div>
+          <div class="ccp-num-field"><label>Y (px)</label><input type="number" id="ccp-y" value="${yVal}" /></div>
+          <div class="ccp-num-field"><label>W (px)</label><input type="number" id="ccp-w" min="8" value="${wVal}" /></div>
+          <div class="ccp-num-field"><label>H (px)</label><input type="number" id="ccp-h" min="8" value="${hVal}" /></div>
+        </div>
+        <div class="ccp-grid-3">
+          <div class="ccp-num-field"><label>Angle (°)</label><input type="number" id="ccp-deg" value="${degVal}" /></div>
+          <div class="ccp-num-field"><label>Opacity %</label><input type="number" id="ccp-op" min="0" max="100" value="${opVal}" /></div>
+          <div class="ccp-num-field">
+            <label>Blend</label>
+            <select class="pc-select" id="ccp-blend" style="height:26px;font-size:10.5px;padding:0 4px;">
+              ${BLEND_MODES.map((bm) => `<option value="${bm.id}" ${lyr.blendMode === bm.id ? 'selected' : ''}>${bm.label}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="ccp-dpad-row">
+          <span style="font-size:10px;color:var(--pc-text-dim);font-weight:700;">NUDGE</span>
+          <div style="display:flex;gap:4px;">
+            <button type="button" class="ccp-btn" id="ccp-nudge-l" title="Move Left">◀</button>
+            <button type="button" class="ccp-btn" id="ccp-nudge-u" title="Move Up">▲</button>
+            <button type="button" class="ccp-btn" id="ccp-nudge-d" title="Move Down">▼</button>
+            <button type="button" class="ccp-btn" id="ccp-nudge-r" title="Move Right">▶</button>
+          </div>
+          <button type="button" class="ccp-btn active" id="ccp-step-toggle" title="Toggle 1px / 10px Nudge Step">${this.nudgeStep}px</button>
+        </div>
+        <div class="ccp-section-lbl">Align ${selLayers.length > 1 ? 'Selected Layers' : 'to Canvas'}</div>
+        <div class="ccp-grid-6">
+          <button type="button" class="ccp-btn" data-align="left" title="Align Left">⇤</button>
+          <button type="button" class="ccp-btn" data-align="centerH" title="Align Center Horizontal">⇹</button>
+          <button type="button" class="ccp-btn" data-align="right" title="Align Right">⇥</button>
+          <button type="button" class="ccp-btn" data-align="top" title="Align Top">⤒</button>
+          <button type="button" class="ccp-btn" data-align="centerV" title="Align Center Vertical">⇕</button>
+          <button type="button" class="ccp-btn" data-align="bottom" title="Align Bottom">⤓</button>
+        </div>
+        <div class="ccp-section-lbl">Layer Stack Order</div>
+        <div class="ccp-grid-4">
+          <button type="button" class="ccp-btn" data-zorder="front">⬆ Front</button>
+          <button type="button" class="ccp-btn" data-zorder="up">↑ Up</button>
+          <button type="button" class="ccp-btn" data-zorder="down">↓ Down</button>
+          <button type="button" class="ccp-btn" data-zorder="back">⬇ Back</button>
+        </div>
+        <div id="ccp-contextual-slot"></div>
+      `;
+
+      pop.querySelector('#ccp-close-btn').addEventListener('click', () => this.closeCanvasPopover());
+
+      const applyNumericTransform = () => {
+        const nx = Number(pop.querySelector('#ccp-x').value);
+        const ny = Number(pop.querySelector('#ccp-y').value);
+        const nw = Math.max(8, Number(pop.querySelector('#ccp-w').value) || wVal);
+        const nh = Math.max(8, Number(pop.querySelector('#ccp-h').value) || hVal);
+        const ndeg = Number(pop.querySelector('#ccp-deg').value) || 0;
+        const nrad = (ndeg * Math.PI) / 180;
+        const ncx = nx + nw / 2;
+        const ncy = ny + nh / 2;
+
+        if (selLayers.length === 1) {
+          if (lyr.kind === 'raster' && !lyr.smartSource) doc.ensureSmartSource(lyr);
+          if (lyr.smartSource?.canvas) {
+            lyr.smartSource.cx = ncx;
+            lyr.smartSource.cy = ncy;
+            lyr.smartSource.w = nw;
+            lyr.smartSource.h = nh;
+            lyr.smartSource.rotation = nrad;
+            doc.rasterizeSmartLayer(lyr);
+          } else if (lyr.kind === 'shape' && lyr.shapeData) {
+            lyr.shapeData.x = nx;
+            lyr.shapeData.y = ny;
+            lyr.shapeData.w = nw;
+            lyr.shapeData.h = nh;
+            lyr.shapeData.rotation = nrad;
+            doc.rasterizeShapeLayer(lyr);
+          } else if (lyr.kind === 'text' && lyr.textData) {
+            const sc = nh / Math.max(1, bounds.h);
+            lyr.textData.fontSize = Math.max(8, Math.min(600, Math.round((lyr.textData.fontSize || 48) * sc)));
+            lyr.textData.x = ncx;
+            lyr.textData.y = ncy;
+            lyr.textData.rotation = nrad;
+            doc.rasterizeTextLayer(lyr);
+          }
+        } else {
+          // Multi-layer delta translation
+          const dx = ncx - bounds.cx;
+          const dy = ncy - bounds.cy;
+          this.nudgeActiveLayer(dx, dy);
+          return;
+        }
+        this._cachedTransformBounds = null;
+        doc.pushHistory('Numeric Transform');
+        this.session.notify('layer.transformed');
+      };
+
+      const wIn = pop.querySelector('#ccp-w');
+      const hIn = pop.querySelector('#ccp-h');
+      const ratio = wVal / Math.max(1, hVal);
+      wIn.addEventListener('change', () => {
+        if (this.transformLockAspect) hIn.value = String(Math.max(8, Math.round(Number(wIn.value) / ratio)));
+        applyNumericTransform();
+      });
+      hIn.addEventListener('change', () => {
+        if (this.transformLockAspect) wIn.value = String(Math.max(8, Math.round(Number(hIn.value) * ratio)));
+        applyNumericTransform();
+      });
+      pop.querySelector('#ccp-x').addEventListener('change', applyNumericTransform);
+      pop.querySelector('#ccp-y').addEventListener('change', applyNumericTransform);
+      pop.querySelector('#ccp-deg').addEventListener('change', applyNumericTransform);
+
+      pop.querySelector('#ccp-op').addEventListener('change', (e) => {
+        const val = Math.max(0, Math.min(100, Number(e.target.value) || 0)) / 100;
+        for (const sl of selLayers) sl.opacity = val;
+        doc.pushHistory('Layer Opacity');
+        this.session.notify('layer.opacity');
+      });
+      pop.querySelector('#ccp-blend').addEventListener('change', (e) => {
+        for (const sl of selLayers) sl.blendMode = e.target.value;
+        doc.pushHistory('Layer Blend Mode');
+        this.session.notify('layer.blendMode');
+      });
+
+      pop.querySelector('#ccp-nudge-l').addEventListener('click', () => { this.nudgeActiveLayer(-this.nudgeStep, 0); renderBody(); });
+      pop.querySelector('#ccp-nudge-r').addEventListener('click', () => { this.nudgeActiveLayer(this.nudgeStep, 0); renderBody(); });
+      pop.querySelector('#ccp-nudge-u').addEventListener('click', () => { this.nudgeActiveLayer(0, -this.nudgeStep); renderBody(); });
+      pop.querySelector('#ccp-nudge-d').addEventListener('click', () => { this.nudgeActiveLayer(0, this.nudgeStep); renderBody(); });
+      pop.querySelector('#ccp-step-toggle').addEventListener('click', () => {
+        this.nudgeStep = this.nudgeStep === 1 ? 10 : 1;
+        renderBody();
+      });
+
+      pop.querySelectorAll('[data-align]').forEach((b) => {
+        b.addEventListener('click', () => {
+          this.session.dispatch('layer.align', { alignment: b.dataset.align });
+          renderBody();
+        });
+      });
+
+      pop.querySelectorAll('[data-zorder]').forEach((b) => {
+        b.addEventListener('click', () => {
+          this.session.dispatch('layer.reorder', { direction: b.dataset.zorder });
+          this.showToast(`Moved Layer ${b.dataset.zorder}`);
+          renderBody();
+        });
+      });
+
+      // Contextual Shape / Text Direct Controls
+      const slot = pop.querySelector('#ccp-contextual-slot');
+      if (selLayers.length === 1 && lyr.kind === 'shape' && lyr.shapeData) {
+        const sd = lyr.shapeData;
+        slot.innerHTML = `
+          <div class="ccp-section-lbl">Shape Properties</div>
+          <div class="ccp-grid-4">
+            <div class="ccp-num-field"><label>Fill</label><input type="color" id="ccp-sh-fill" value="${sd.fill && sd.fill.startsWith('#') ? sd.fill : '#378ef0'}" style="padding:1px;" /></div>
+            <div class="ccp-num-field"><label>Stroke</label><input type="color" id="ccp-sh-stroke" value="${sd.stroke && sd.stroke.startsWith('#') ? sd.stroke : '#ffffff'}" style="padding:1px;" /></div>
+            <div class="ccp-num-field"><label>Strk px</label><input type="number" id="ccp-sh-sw" min="0" max="40" value="${sd.strokeWidth ?? 3}" /></div>
+            <div class="ccp-num-field"><label>Radius</label><input type="number" id="ccp-sh-rad" min="0" max="200" value="${sd.cornerRadius ?? 14}" /></div>
+          </div>
+        `;
+        const syncShape = () => {
+          sd.fill = slot.querySelector('#ccp-sh-fill').value;
+          sd.stroke = slot.querySelector('#ccp-sh-stroke').value;
+          sd.strokeWidth = Math.max(0, Number(slot.querySelector('#ccp-sh-sw').value) || 0);
+          sd.cornerRadius = Math.max(0, Number(slot.querySelector('#ccp-sh-rad').value) || 0);
+          doc.rasterizeShapeLayer(lyr);
+          doc.pushHistory('Edit Shape Properties');
+          this.session.notify('shape.updated');
+        };
+        slot.querySelectorAll('input').forEach((inp) => inp.addEventListener('change', syncShape));
+      } else if (selLayers.length === 1 && lyr.kind === 'text' && lyr.textData) {
+        slot.innerHTML = `<div style="margin-top:6px;"><button type="button" class="ccp-btn active" id="ccp-edit-text" style="width:100%;">✎ Edit Text Directly on Canvas</button></div>`;
+        slot.querySelector('#ccp-edit-text').addEventListener('click', () => {
+          this.closeCanvasPopover();
+          this.selectTool('text');
+          this.startInlineTextEdit(lyr, false);
+        });
+      }
+    };
+
+    renderBody();
+    pop.hidden = false;
+    this._canvasPopoverKind = 'precision';
+  }
+
+  /**
+   * Universal Canvas Object Picker:
+   * - Long-press anywhere on canvas -> shows EVERY layer stacked under that point (even hidden/covered ones!)
+   * - Tap "📚 Pick" -> shows EVERY selectable object in the entire canvas (Layers + Masks + Slices)!
+   */
+  openCanvasObjectPicker(docX = null, docY = null) {
+    const pop = document.getElementById('canvas-control-popover');
+    const doc = this.session.doc;
+    if (!pop || !doc) return;
+    const isPointFilter = typeof docX === 'number' && typeof docY === 'number';
+    if (!isPointFilter && !pop.hidden && this._canvasPopoverKind === 'picker') {
+      this.closeCanvasPopover();
+      return;
+    }
+
+    const renderPicker = () => {
+      const selectedIds = new Set(doc.getSelectedLayers().map((l) => l.id));
+      const items = [];
+      for (let i = doc.layers.length - 1; i >= 0; i--) {
+        const lyr = doc.layers[i];
+        let atPoint = !isPointFilter;
+        if (isPointFilter) {
+          if (lyr.kind === 'adjustment') {
+            atPoint = true;
+          } else {
+            const b = doc.getLayerTransformBounds(lyr);
+            if (b) {
+              const cos = Math.cos(b.rotation || 0);
+              const sin = Math.sin(b.rotation || 0);
+              const dx = docX - b.cx;
+              const dy = docY - b.cy;
+              const lx = dx * cos + dy * sin;
+              const ly = -dx * sin + dy * cos;
+              if (Math.abs(lx) <= b.w / 2 + 12 && Math.abs(ly) <= b.h / 2 + 12) atPoint = true;
+            }
+          }
+        }
+        if (atPoint) items.push(lyr);
+      }
+      // If point filter found nothing, show all layers so user always has complete access
+      const displayLayers = items.length > 0 ? items : [...doc.layers].reverse();
+
+      pop.classList.remove('top-right-anchor');
+      pop.innerHTML = `
+        <div class="ccp-header">
+          <span class="ccp-title">📚 ${isPointFilter ? 'Objects Under Tap' : 'Select Anything in Canvas'} (${displayLayers.length})</span>
+          <div style="display:flex;gap:4px;">
+            <button type="button" class="ccp-btn ${this.moveMultiSelect ? 'active' : ''}" id="ccp-pk-multi" style="height:22px;">${this.moveMultiSelect ? '☑ Multi' : '☐ Multi'}</button>
+            <button type="button" class="ccp-btn" id="ccp-pk-close" style="height:22px;padding:0 7px;">✕</button>
+          </div>
+        </div>
+        <div id="ccp-pk-list"></div>
+      `;
+
+      pop.querySelector('#ccp-pk-close').addEventListener('click', () => this.closeCanvasPopover());
+      pop.querySelector('#ccp-pk-multi').addEventListener('click', () => {
+        this.moveMultiSelect = !this.moveMultiSelect;
+        this.renderToolOptionsStrip();
+        renderPicker();
+      });
+
+      const list = pop.querySelector('#ccp-pk-list');
+      for (const lyr of displayLayers) {
+        const isSel = selectedIds.has(lyr.id);
+        const row = document.createElement('div');
+        row.className = `ccp-pick-item${isSel ? ' selected' : ''}`;
+        row.dataset.pickLayerId = lyr.id;
+
+        const kindIcon = lyr.kind === 'text' ? 'T' : lyr.kind === 'shape' ? '▢' : lyr.kind === 'adjustment' ? '◐' : lyr.smartSource ? '🖼️' : '🎨';
+        const thumbUrl = lyr.kind !== 'adjustment' ? this.renderMiniLayerThumb(lyr) : '';
+        row.innerHTML = `
+          ${thumbUrl ? `<img class="ccp-pick-thumb" src="${thumbUrl}" alt="" />` : `<div class="ccp-pick-thumb" style="display:flex;align-items:center;justify-content:center;font-size:13px;">${kindIcon}</div>`}
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${kindIcon} ${lyr.name}</div>
+            <div style="font-size:9.5px;color:var(--pc-text-dim);">${Math.round((lyr.opacity ?? 1) * 100)}% · ${lyr.visible ? 'Visible' : 'Hidden'}${lyr.locked ? ' · Locked' : ''}${lyr.maskCanvas ? ' · Mask' : ''}</div>
+          </div>
+          <button type="button" class="ccp-btn" data-act="selshape" title="Load Shape as Smart Selection" style="height:24px;padding:0 5px;">🎯</button>
+          <button type="button" class="ccp-btn" data-act="vis" title="Toggle Visibility" style="height:24px;padding:0 5px;">${lyr.visible ? '👁' : '🚫'}</button>
+          <button type="button" class="ccp-btn" data-act="lock" title="Toggle Lock" style="height:24px;padding:0 5px;">${lyr.locked ? '🔒' : '🔓'}</button>
+        `;
+
+        row.addEventListener('click', (e) => {
+          const actBtn = e.target.closest('[data-act]');
+          if (actBtn) {
+            e.stopPropagation();
+            const act = actBtn.dataset.act;
+            if (act === 'vis') {
+              lyr.visible = !lyr.visible;
+              doc.compose();
+              this.session.notify('layer.visibility');
+              renderPicker();
+            } else if (act === 'lock') {
+              lyr.locked = !lyr.locked;
+              this.session.notify('layer.lock');
+              renderPicker();
+            } else if (act === 'selshape') {
+              doc.selectLayerTransparency(lyr, this.selectCombineMode);
+              this.session.notify('selection.fromLayer');
+              this.closeCanvasPopover();
+              this.showToast(`Selected "${lyr.name}" Pixels`);
+            }
+            return;
+          }
+
+          if (this.moveMultiSelect) {
+            doc.toggleLayerSelection(lyr.id);
+          } else {
+            doc.activeLayerId = lyr.id;
+            doc.setSelectedLayerIds([lyr.id]);
+          }
+          doc.editingMask = false;
+          this._cachedTransformBounds = null;
+          this.syncHeaderAndHUD();
+          this.renderFloatingContextBar();
+          if (this.rightLayersOpen) this.renderRightLayersDrawer();
+          this.requestRender();
+          if (!this.moveMultiSelect) {
+            this.closeCanvasPopover();
+            this.showToast(`Selected "${lyr.name}"`);
+          } else {
+            renderPicker();
+          }
+        });
+        list.appendChild(row);
+      }
+
+      // Also list Slices if present so literally everything in canvas is selectable!
+      if (doc.slices && doc.slices.length > 0) {
+        const sLbl = document.createElement('div');
+        sLbl.className = 'ccp-section-lbl';
+        sLbl.textContent = `Canvas Slices (${doc.slices.length})`;
+        list.appendChild(sLbl);
+        for (const sl of doc.slices) {
+          const sBtn = document.createElement('button');
+          sBtn.type = 'button';
+          sBtn.className = `ccp-pick-item${doc.selectedSliceId === sl.id ? ' selected' : ''}`;
+          sBtn.innerHTML = `<span style="font-weight:700;">⊞ ${sl.name || 'Slice'}</span><span style="margin-left:auto;font-size:10px;color:var(--pc-text-dim);">${sl.w}×${sl.h}</span>`;
+          sBtn.addEventListener('click', () => {
+            doc.selectedSliceId = sl.id;
+            this.selectTool('sliceSelect');
+            this.closeCanvasPopover();
+          });
+          list.appendChild(sBtn);
+        }
+      }
+    };
+
+    renderPicker();
+    pop.hidden = false;
+    this._canvasPopoverKind = 'picker';
+  }
+
+  renderMiniLayerThumb(layer) {
+    try {
+      const c = document.createElement('canvas');
+      c.width = 36;
+      c.height = 36;
+      const ctx = c.getContext('2d');
+      const src = layer.smartSource?.canvas || layer.canvas;
+      if (!src) return '';
+      const scale = Math.min(36 / Math.max(1, src.width), 36 / Math.max(1, src.height));
+      const dw = src.width * scale;
+      const dh = src.height * scale;
+      ctx.drawImage(src, (36 - dw) / 2, (36 - dh) / 2, dw, dh);
+      return c.toDataURL('image/png');
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /**
+   * Smart Selection Refine Edge Popover (Expand, Contract, Feather, Smooth, Border, Invert, Load Layer)
+   */
+  openSelectionRefinePopover() {
+    const pop = document.getElementById('canvas-control-popover');
+    const doc = this.session.doc;
+    if (!pop || !doc) return;
+    if (!pop.hidden && this._canvasPopoverKind === 'refine') {
+      this.closeCanvasPopover();
+      return;
+    }
+
+    let radius = 6;
+    pop.classList.remove('top-right-anchor');
+    pop.innerHTML = `
+      <div class="ccp-header">
+        <span class="ccp-title">⚙ Refine Smart Selection</span>
+        <button type="button" class="ccp-btn" id="ccp-ref-close" style="height:22px;padding:0 7px;">✕</button>
+      </div>
+      <div id="ccp-ref-slider"></div>
+      <div class="ccp-grid-3" style="margin-top:6px;">
+        <button type="button" class="ccp-btn" data-mod="expand">⤢ Expand</button>
+        <button type="button" class="ccp-btn" data-mod="contract">⤡ Contract</button>
+        <button type="button" class="ccp-btn" data-mod="feather">☁️ Feather</button>
+        <button type="button" class="ccp-btn" data-mod="smooth">〰 Smooth</button>
+        <button type="button" class="ccp-btn" data-mod="border">▢ Border</button>
+        <button type="button" class="ccp-btn" id="ccp-ref-inv">⇄ Invert</button>
+      </div>
+    `;
+    this.appendRangeRow(pop.querySelector('#ccp-ref-slider'), 'Refine Radius', 1, 30, 1, radius, 'px', (v) => {
+      radius = v;
+    });
+    pop.querySelector('#ccp-ref-close').addEventListener('click', () => this.closeCanvasPopover());
+    pop.querySelector('#ccp-ref-inv').addEventListener('click', () => {
+      this.session.dispatch('selection.invert');
+      this.showToast('Inverted Selection');
+    });
+    pop.querySelectorAll('[data-mod]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const op = b.dataset.mod;
+        this.session.dispatch('selection.modify', { op, radius });
+        this.showToast(`Selection ${op} (${radius}px)`);
+      });
+    });
+
+    pop.hidden = false;
+    this._canvasPopoverKind = 'refine';
+  }
+
+  /**
+   * Top-Right Zoom, Grid, Pixel Rulers & Smart Guides Control Popover (triggered by 31% Zoom HUD badge)
+   */
+  openViewControlsPopover() {
+    const pop = document.getElementById('canvas-control-popover');
+    if (!pop) return;
+    if (!pop.hidden && this._canvasPopoverKind === 'view') {
+      this.closeCanvasPopover();
+      return;
+    }
+
+    const renderView = () => {
+      pop.classList.add('top-right-anchor');
+      pop.innerHTML = `
+        <div class="ccp-header">
+          <span class="ccp-title">🔍 View &amp; Guides (${Math.round(this.zoom * 100)}%)</span>
+          <button type="button" class="ccp-btn" id="ccp-vw-close" style="height:22px;padding:0 6px;">✕</button>
+        </div>
+        <div class="ccp-grid-4">
+          <button type="button" class="ccp-btn" id="ccp-z-fit">Fit</button>
+          <button type="button" class="ccp-btn" id="ccp-z-50">50%</button>
+          <button type="button" class="ccp-btn" id="ccp-z-100">100%</button>
+          <button type="button" class="ccp-btn" id="ccp-z-200">200%</button>
+        </div>
+        <div class="ccp-grid-3">
+          <button type="button" class="ccp-btn" id="ccp-z-out">− Zoom</button>
+          <button type="button" class="ccp-btn" id="ccp-z-in">+ Zoom</button>
+          <button type="button" class="ccp-btn" id="ccp-z-pick">📚 Pick</button>
+        </div>
+        <div class="ccp-section-lbl">Canvas Overlays</div>
+        <div style="display:flex;flex-direction:column;gap:5px;">
+          <button type="button" class="ccp-btn ${this.showCanvasGrid ? 'active' : ''}" id="ccp-tg-grid" style="justify-content:flex-start;">${this.showCanvasGrid ? '☑' : '☐'} Alignment Grid</button>
+          <button type="button" class="ccp-btn ${this.showRulers ? 'active' : ''}" id="ccp-tg-rulers" style="justify-content:flex-start;">${this.showRulers ? '☑' : '☐'} Pixel Rulers (px)</button>
+          <button type="button" class="ccp-btn ${this.enableSmartGuides ? 'active' : ''}" id="ccp-tg-guides" style="justify-content:flex-start;">${this.enableSmartGuides ? '☑' : '☐'} Smart Snapping Guides</button>
+        </div>
+      `;
+
+      pop.querySelector('#ccp-vw-close').addEventListener('click', () => this.closeCanvasPopover());
+      pop.querySelector('#ccp-z-fit').addEventListener('click', () => { this.fitCanvasToViewport(); renderView(); });
+      const setCenteredZoom = (z) => {
+        const doc = this.session.doc;
+        if (!doc) return;
+        const rect = this.workspaceEl.getBoundingClientRect();
+        this.zoom = Math.max(0.15, Math.min(16, z));
+        this.panX = (rect.width - doc.width * this.zoom) / 2;
+        this.panY = (rect.height - doc.height * this.zoom) / 2;
+        this.syncHeaderAndHUD();
+        this.requestRender();
+        renderView();
+      };
+      pop.querySelector('#ccp-z-50').addEventListener('click', () => setCenteredZoom(0.5));
+      pop.querySelector('#ccp-z-100').addEventListener('click', () => setCenteredZoom(1.0));
+      pop.querySelector('#ccp-z-200').addEventListener('click', () => setCenteredZoom(2.0));
+      pop.querySelector('#ccp-z-out').addEventListener('click', () => setCenteredZoom(this.zoom * 0.8));
+      pop.querySelector('#ccp-z-in').addEventListener('click', () => setCenteredZoom(this.zoom * 1.25));
+      pop.querySelector('#ccp-z-pick').addEventListener('click', () => this.openCanvasObjectPicker(null, null));
+      pop.querySelector('#ccp-tg-grid').addEventListener('click', () => {
+        this.showCanvasGrid = !this.showCanvasGrid;
+        this.requestRender();
+        renderView();
+      });
+      pop.querySelector('#ccp-tg-rulers').addEventListener('click', () => {
+        this.showRulers = !this.showRulers;
+        this.syncBrushPillVisibility();
+        this.requestRender();
+        renderView();
+      });
+      pop.querySelector('#ccp-tg-guides').addEventListener('click', () => {
+        this.enableSmartGuides = !this.enableSmartGuides;
+        renderView();
+      });
+    };
+
+    renderView();
+    pop.hidden = false;
+    this._canvasPopoverKind = 'view';
   }
 
   /* ==========================================================================
@@ -2872,6 +3666,10 @@ class ProStudioMobileApp {
           this.brush.activeStroke = null;
           this.session.doc?.endFastInteraction();
         }
+        if (this._longPressTimer) {
+          clearTimeout(this._longPressTimer);
+          this._longPressTimer = null;
+        }
         if (this.toolDrag?.type === 'move') {
           const drag = this.toolDrag;
           drag.targetCanvas.getContext('2d').clearRect(0, 0, drag.targetCanvas.width, drag.targetCanvas.height);
@@ -2879,17 +3677,20 @@ class ProStudioMobileApp {
           this.session.doc?.endFastInteraction();
         } else if (this.toolDrag?.type === 'transform') {
           const drag = this.toolDrag;
-          const lyr = drag.layer;
-          if (lyr && this.session.doc) {
-            if (drag.origSmart && lyr.smartSource) {
-              Object.assign(lyr.smartSource, drag.origSmart);
-              this.session.doc.rasterizeSmartLayer(lyr);
-            } else if (drag.origText && lyr.textData) {
-              Object.assign(lyr.textData, drag.origText);
-              this.session.doc.rasterizeTextLayer(lyr);
-            } else if (drag.origShape && lyr.shapeData) {
-              Object.assign(lyr.shapeData, drag.origShape);
-              this.session.doc.rasterizeShapeLayer(lyr);
+          if (this.session.doc && Array.isArray(drag.targetSnapshots)) {
+            for (const snap of drag.targetSnapshots) {
+              const lyr = snap.layer;
+              if (!lyr) continue;
+              if (snap.origSmart && lyr.smartSource) {
+                Object.assign(lyr.smartSource, snap.origSmart);
+                this.session.doc.rasterizeSmartLayer(lyr);
+              } else if (snap.origText && lyr.textData) {
+                Object.assign(lyr.textData, snap.origText);
+                this.session.doc.rasterizeTextLayer(lyr);
+              } else if (snap.origShape && lyr.shapeData) {
+                Object.assign(lyr.shapeData, snap.origShape);
+                this.session.doc.rasterizeShapeLayer(lyr);
+              }
             }
           }
           this.activeSmartGuides = [];
@@ -3400,9 +4201,54 @@ class ProStudioMobileApp {
 
     if (this.activeTool === 'select') {
       if (this.selectMode === 'wand') {
-        doc.selectMagicWand(pt.x, pt.y, this.wandTolerance);
+        doc.selectMagicWand(pt.x, pt.y, this.wandTolerance, {
+          contiguous: this.selectContiguous,
+          sampleAllLayers: this.selectSampleAll,
+          combineMode: this.selectCombineMode
+        });
         this.session.notify('selection.wand');
         this.showToast('Magic Wand Selection');
+        return;
+      }
+      if (this.selectMode === 'colorRange') {
+        doc.selectColorRange(pt.x, pt.y, {
+          fuzziness: this.wandTolerance,
+          combineMode: this.selectCombineMode,
+          sampleAllLayers: this.selectSampleAll
+        });
+        this.session.notify('selection.colorRange');
+        this.showToast('Color Range Selected');
+        return;
+      }
+      if (this.selectMode === 'quickSelect') {
+        const effMode =
+          this.selectCombineMode === 'subtract'
+            ? 'subtract'
+            : this.selectCombineMode === 'intersect'
+            ? 'intersect'
+            : this.selectCombineMode === 'replace' && !doc.hasSelection
+            ? 'replace'
+            : this.selectCombineMode === 'replace'
+            ? 'replace'
+            : 'add';
+        this.toolDrag = {
+          type: 'select',
+          mode: 'quickSelect',
+          combineMode: effMode,
+          startX: pt.x,
+          startY: pt.y,
+          currX: pt.x,
+          currY: pt.y,
+          points: [{ x: pt.x, y: pt.y }],
+          lastLiveAt: performance.now()
+        };
+        doc.applyQuickSelectBrush([{ x: pt.x, y: pt.y }], {
+          radius: this.quickSelectRadius,
+          tolerance: this.wandTolerance,
+          combineMode: effMode,
+          sampleAllLayers: this.selectSampleAll
+        });
+        this.requestRender();
         return;
       }
       this.toolDrag = {
@@ -3417,8 +4263,13 @@ class ProStudioMobileApp {
       return;
     }
 
-    // ---- Photoshop Move & Interactive Free Transform Scaler (8 Handles + Rotate + Auto-Select + Smart Guides) ----
+    // ---- Photoshop Move, Universal Canvas Selection & Interactive Multi-Layer Free Transform ----
     if (this.activeTool === 'move') {
+      if (this._longPressTimer) {
+        clearTimeout(this._longPressTimer);
+        this._longPressTimer = null;
+      }
+
       // Mask moving stays fast pixel-shift on maskCanvas
       if (layer && !layer.locked && doc.editingMask && layer.maskCanvas) {
         doc.beginFastInteraction();
@@ -3439,34 +4290,107 @@ class ProStudioMobileApp {
         return;
       }
 
-      // 1. Always hit-test active layer's handles FIRST so scaling/rotating never switches layers
-      let activeBounds = layer && !layer.locked && layer.kind !== 'adjustment' ? this.getActiveTransformBounds() : null;
+      // 1. Always hit-test active/combined selection handles FIRST so scaling/rotating never switches layers
+      let activeBounds = this.getActiveTransformBounds();
       let handleHit = activeBounds ? this.hitTestTransformHandles(pt, activeBounds) : null;
       let mode = 'move';
       let sx = 0;
       let sy = 0;
 
+      let pendingDeselectId = null;
+      const isMultiDown = this.moveMultiSelect || Boolean(e.shiftKey);
+
+      // Double-tap anywhere on an active Text layer in Move mode -> jump straight into live on-canvas text editing!
+      // Checked before edge-handle hit-testing because compact text boxes on mobile overlap top/bottom handles.
+      if (
+        !isMultiDown &&
+        layer &&
+        layer.kind === 'text' &&
+        layer.textData &&
+        this._lastMoveTextTap &&
+        this._lastMoveTextTap.layerId === layer.id &&
+        performance.now() - this._lastMoveTextTap.time < 450 &&
+        Math.hypot(e.clientX - this._lastMoveTextTap.clientX, e.clientY - this._lastMoveTextTap.clientY) < 28
+      ) {
+        this._lastMoveTextTap = null;
+        this.selectTool('text');
+        this.startInlineTextEdit(layer, false);
+        return;
+      }
+
       if (handleHit && handleHit.mode !== 'inside' && handleHit.mode !== 'outerRotate') {
         mode = handleHit.mode; // 'rotate' or one of 'nw,n,ne,e,se,s,sw,w'
         sx = handleHit.sx;
         sy = handleHit.sy;
+        if (!isMultiDown && layer && layer.kind === 'text' && layer.textData) {
+          this._lastMoveTextTap = { layerId: layer.id, time: performance.now(), clientX: e.clientX, clientY: e.clientY };
+        }
       } else {
-        // 2. Auto-Select topmost visible unlocked layer under finger if enabled
+        // 2. Auto-Select or Multi-Select layer under finger
         let switchedLayer = false;
-        if (this.moveAutoSelect) {
-          const autoHit = this.hitTestLayerAtPoint(pt.x, pt.y);
-          if (autoHit && autoHit.id !== doc.activeLayerId) {
+        const isMulti = isMultiDown;
+        const autoHit = this.moveAutoSelect || isMulti ? this.hitTestLayerAtPoint(pt.x, pt.y) : null;
+        const isBottomBg =
+          autoHit &&
+          doc.layers.indexOf(autoHit) === 0 &&
+          !autoHit.smartSource &&
+          autoHit.kind === 'raster' &&
+          /background/i.test(autoHit.name);
+
+        // If Multi-Sel is ON and user drags from empty space / background outside active group -> Canvas Marquee Multi-Layer Select!
+        if (isMulti && (!autoHit || isBottomBg) && (!handleHit || handleHit.mode !== 'inside')) {
+          this.toolDrag = {
+            type: 'layerMarquee',
+            startX: pt.x,
+            startY: pt.y,
+            currX: pt.x,
+            currY: pt.y
+          };
+          return;
+        }
+
+        if (autoHit) {
+          if (isMulti) {
+            if (!isBottomBg) {
+              const alreadySelected = doc.getSelectedLayers().some((l) => l.id === autoHit.id);
+              if (alreadySelected) {
+                // Keep in group during drag; only deselect on quick tap-up without movement
+                pendingDeselectId = autoHit.id;
+              } else {
+                doc.toggleLayerSelection(autoHit.id);
+                doc.editingMask = false;
+                this._cachedTransformBounds = null;
+                layer = doc.activeLayer;
+                activeBounds = this.getActiveTransformBounds();
+                switchedLayer = true;
+                this.syncHeaderAndHUD();
+                this.renderFloatingContextBar();
+                if (this.rightLayersOpen) this.renderRightLayersDrawer();
+                this.requestRender();
+              }
+            }
+          } else if (autoHit.id !== doc.activeLayerId || doc.getSelectedLayers().length > 1) {
             doc.activeLayerId = autoHit.id;
+            doc.setSelectedLayerIds([autoHit.id]);
             doc.editingMask = false;
             this._cachedTransformBounds = null;
             layer = autoHit;
             activeBounds = this.getActiveTransformBounds();
+            handleHit = activeBounds ? this.hitTestTransformHandles(pt, activeBounds) : null;
             switchedLayer = true;
             this.syncHeaderAndHUD();
+            this.renderFloatingContextBar();
             if (this.rightLayersOpen) this.renderRightLayersDrawer();
             this.requestRender();
           }
         }
+
+        if (!isMulti && layer && layer.kind === 'text' && layer.textData && (switchedLayer || handleHit?.mode === 'inside')) {
+          this._lastMoveTextTap = { layerId: layer.id, time: performance.now(), clientX: e.clientX, clientY: e.clientY };
+        } else {
+          this._lastMoveTextTap = null;
+        }
+
         // 3. Outside-corner rotation if we stayed on the active layer
         if (!switchedLayer && handleHit && handleHit.mode === 'outerRotate') {
           mode = 'rotate';
@@ -3475,21 +4399,17 @@ class ProStudioMobileApp {
         }
       }
 
-      if (!layer || layer.locked) {
-        this.showToast('Active layer is locked');
-        return;
-      }
-      if (layer.kind === 'adjustment') {
-        this.showToast('Select a pixel, image, type, or shape layer to move or scale');
+      const targets = doc.getSelectedLayers().filter((l) => l && !l.locked && l.kind !== 'adjustment');
+      if (targets.length === 0) {
+        if (!layer || layer.locked) this.showToast('Active layer is locked');
+        else this.showToast('Select a pixel, image, type, or shape layer to move or scale');
         return;
       }
 
-      // Promote raster layers to non-destructive Smart Source so moving/scaling NEVER clips or blurs!
-      if (layer.kind === 'raster') {
-        const ss = doc.ensureSmartSource(layer);
-        if (!ss) {
-          this.showToast('Active layer is empty');
-          return;
+      // Promote raster targets to non-destructive Smart Source so moving/scaling NEVER clips or blurs!
+      for (const tLyr of targets) {
+        if (tLyr.kind === 'raster') {
+          doc.ensureSmartSource(tLyr);
         }
       }
 
@@ -3497,35 +4417,57 @@ class ProStudioMobileApp {
       if (!activeBounds) return;
 
       doc.beginFastInteraction();
-      const origSmart = layer.smartSource
-        ? {
-            cx: layer.smartSource.cx,
-            cy: layer.smartSource.cy,
-            w: layer.smartSource.w,
-            h: layer.smartSource.h,
-            rotation: layer.smartSource.rotation || 0,
-            flipX: Boolean(layer.smartSource.flipX),
-            flipY: Boolean(layer.smartSource.flipY)
-          }
-        : null;
-      const origText = layer.textData ? structuredClone(layer.textData) : null;
-      const origShape = layer.shapeData ? structuredClone(layer.shapeData) : null;
+      const targetSnapshots = targets.map((tLyr) => ({
+        layer: tLyr,
+        bounds: doc.getLayerTransformBounds(tLyr),
+        origSmart: tLyr.smartSource
+          ? {
+              cx: tLyr.smartSource.cx,
+              cy: tLyr.smartSource.cy,
+              w: tLyr.smartSource.w,
+              h: tLyr.smartSource.h,
+              rotation: tLyr.smartSource.rotation || 0,
+              flipX: Boolean(tLyr.smartSource.flipX),
+              flipY: Boolean(tLyr.smartSource.flipY)
+            }
+          : null,
+        origText: tLyr.textData ? structuredClone(tLyr.textData) : null,
+        origShape: tLyr.shapeData ? structuredClone(tLyr.shapeData) : null
+      }));
 
       this.toolDrag = {
         type: 'transform',
         mode,
         sx,
         sy,
-        layer,
+        layer: targets[targets.length - 1],
+        targets,
+        targetSnapshots,
+        origSmart: targetSnapshots[0]?.origSmart || null,
+        origText: targetSnapshots[0]?.origText || null,
+        origShape: targetSnapshots[0]?.origShape || null,
         startX: pt.x,
         startY: pt.y,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
         origBounds: { ...activeBounds },
-        origSmart,
-        origText,
-        origShape,
         startAngle: Math.atan2(pt.y - activeBounds.cy, pt.x - activeBounds.cx),
+        pendingDeselectId,
         changed: false
       };
+
+      // Long-press (450ms without moving) -> open "Objects Under Tap" Universal Stack Picker!
+      if (mode === 'move') {
+        this._longPressTimer = setTimeout(() => {
+          this._longPressTimer = null;
+          if (this.toolDrag?.type === 'transform' && !this.toolDrag.changed) {
+            this.toolDrag = null;
+            doc.endFastInteraction();
+            this.hapticTick();
+            this.openCanvasObjectPicker(pt.x, pt.y);
+          }
+        }, 450);
+      }
       return;
     }
 
@@ -3628,6 +4570,11 @@ class ProStudioMobileApp {
     const drag = this.toolDrag;
     if (!drag) return;
 
+    if (this._longPressTimer && Math.hypot(e.clientX - (drag.startClientX || 0), e.clientY - (drag.startClientY || 0)) > 8) {
+      clearTimeout(this._longPressTimer);
+      this._longPressTimer = null;
+    }
+
     if (drag.type === 'pan') {
       this.panX = drag.origPanX + (e.clientX - drag.startX);
       this.panY = drag.origPanY + (e.clientY - drag.startY);
@@ -3637,6 +4584,13 @@ class ProStudioMobileApp {
 
     if (drag.type === 'eyedropper') {
       this.sampleColorWithLoupe(pt.x, pt.y, e.clientX, e.clientY);
+      return;
+    }
+
+    if (drag.type === 'layerMarquee') {
+      drag.currX = pt.x;
+      drag.currY = pt.y;
+      this.requestRender();
       return;
     }
 
@@ -3651,9 +4605,10 @@ class ProStudioMobileApp {
       return;
     }
 
-    // ---- Photoshop Move & Interactive Free Transform (Move + Smart Guides + 8-Handle Scale + Rotate) ----
+    // ---- Photoshop Move & Interactive Single/Multi-Layer Free Transform ----
     if (drag.type === 'transform') {
-      const lyr = drag.layer;
+      const snapshots = drag.targetSnapshots || [];
+      if (snapshots.length === 0) return;
       const ob = drag.origBounds;
       drag.changed = true;
       this.activeSmartGuides = [];
@@ -3665,54 +4620,53 @@ class ProStudioMobileApp {
       let newRot = ob.rotation || 0;
 
       if (drag.mode === 'move') {
-        let dx = pt.x - drag.startX;
-        let dy = pt.y - drag.startY;
+        const dx = pt.x - drag.startX;
+        const dy = pt.y - drag.startY;
         newCx = ob.cx + dx;
         newCy = ob.cy + dy;
 
-        // Photoshop Smart Guides Snapping to Canvas Center & Edges
-        const snapThresh = Math.max(6, 10 / this.zoom);
-        const cosA = Math.abs(Math.cos(newRot));
-        const sinA = Math.abs(Math.sin(newRot));
-        const halfW = (ob.w * cosA + ob.h * sinA) / 2;
-        const halfH = (ob.w * sinA + ob.h * cosA) / 2;
+        if (this.enableSmartGuides) {
+          const snapThresh = Math.max(6, 10 / this.zoom);
+          const cosA = Math.abs(Math.cos(newRot));
+          const sinA = Math.abs(Math.sin(newRot));
+          const halfW = (ob.w * cosA + ob.h * sinA) / 2;
+          const halfH = (ob.w * sinA + ob.h * cosA) / 2;
 
-        const xTargets = [
-          { test: newCx, snapVal: doc.width / 2, guide: doc.width / 2 },
-          { test: newCx - halfW, snapVal: 0, guide: 0 },
-          { test: newCx + halfW, snapVal: doc.width, guide: doc.width }
-        ];
-        for (const t of xTargets) {
-          if (Math.abs(t.test - t.snapVal) < snapThresh) {
-            newCx += t.snapVal - t.test;
-            this.activeSmartGuides.push({ axis: 'v', pos: t.guide });
-            break;
+          const xTargets = [
+            { test: newCx, snapVal: doc.width / 2, guide: doc.width / 2 },
+            { test: newCx - halfW, snapVal: 0, guide: 0 },
+            { test: newCx + halfW, snapVal: doc.width, guide: doc.width }
+          ];
+          for (const t of xTargets) {
+            if (Math.abs(t.test - t.snapVal) < snapThresh) {
+              newCx += t.snapVal - t.test;
+              this.activeSmartGuides.push({ axis: 'v', pos: t.guide });
+              break;
+            }
           }
-        }
-        const yTargets = [
-          { test: newCy, snapVal: doc.height / 2, guide: doc.height / 2 },
-          { test: newCy - halfH, snapVal: 0, guide: 0 },
-          { test: newCy + halfH, snapVal: doc.height, guide: doc.height }
-        ];
-        for (const t of yTargets) {
-          if (Math.abs(t.test - t.snapVal) < snapThresh) {
-            newCy += t.snapVal - t.test;
-            this.activeSmartGuides.push({ axis: 'h', pos: t.guide });
-            break;
+          const yTargets = [
+            { test: newCy, snapVal: doc.height / 2, guide: doc.height / 2 },
+            { test: newCy - halfH, snapVal: 0, guide: 0 },
+            { test: newCy + halfH, snapVal: doc.height, guide: doc.height }
+          ];
+          for (const t of yTargets) {
+            if (Math.abs(t.test - t.snapVal) < snapThresh) {
+              newCy += t.snapVal - t.test;
+              this.activeSmartGuides.push({ axis: 'h', pos: t.guide });
+              break;
+            }
           }
         }
       } else if (drag.mode === 'rotate') {
         const curAngle = Math.atan2(pt.y - ob.cy, pt.x - ob.cx);
-        let delta = curAngle - drag.startAngle;
+        const delta = curAngle - drag.startAngle;
         newRot = (ob.rotation || 0) + delta;
-        // Gentle snap to 0°, ±45°, ±90°, ±135°, 180° (within 3°)
         const deg = (newRot * 180) / Math.PI;
         const nearest45 = Math.round(deg / 45) * 45;
         if (Math.abs(deg - nearest45) < 3.0) {
           newRot = (nearest45 * Math.PI) / 180;
         }
       } else {
-        // 8-Handle Anchored Opposite-Corner / Opposite-Edge Scaling in Rotated Local Basis
         const cos = Math.cos(ob.rotation || 0);
         const sin = Math.sin(ob.rotation || 0);
         const dx = pt.x - ob.cx;
@@ -3729,7 +4683,7 @@ class ProStudioMobileApp {
         const rawH = sy !== 0 ? Math.max(12, sy * (ly - ay)) : ob.h;
         const isCorner = sx !== 0 && sy !== 0;
 
-        if (lyr.kind === 'text') {
+        if (snapshots.length === 1 && snapshots[0].layer.kind === 'text') {
           const sc = isCorner
             ? Math.max(0.08, (rawW * ob.w + rawH * ob.h) / Math.max(1, ob.w * ob.w + ob.h * ob.h))
             : sx !== 0
@@ -3738,7 +4692,6 @@ class ProStudioMobileApp {
           newW = Math.max(12, ob.w * sc);
           newH = Math.max(12, ob.h * sc);
         } else if (isCorner && this.transformLockAspect) {
-          // Exact Photoshop diagonal-projected proportional corner scale
           const sc = Math.max(12 / Math.max(1, Math.min(ob.w, ob.h)), (rawW * ob.w + rawH * ob.h) / Math.max(1, ob.w * ob.w + ob.h * ob.h));
           newW = Math.max(12, ob.w * sc);
           newH = Math.max(12, ob.h * sc);
@@ -3753,38 +4706,84 @@ class ProStudioMobileApp {
         newCy = ob.cy + newLocalCx * sin + newLocalCy * cos;
       }
 
-      // Apply live to layer's underlying representation
-      if (lyr.smartSource?.canvas) {
-        lyr.smartSource.cx = newCx;
-        lyr.smartSource.cy = newCy;
-        lyr.smartSource.w = newW;
-        lyr.smartSource.h = newH;
-        lyr.smartSource.rotation = newRot;
-        doc.rasterizeSmartLayer(lyr);
-      } else if (lyr.kind === 'shape' && lyr.shapeData) {
-        lyr.shapeData.w = newW;
-        lyr.shapeData.h = newH;
-        lyr.shapeData.x = newCx - newW / 2;
-        lyr.shapeData.y = newCy - newH / 2;
-        lyr.shapeData.rotation = newRot;
-        doc.rasterizeShapeLayer(lyr);
-      } else if (lyr.kind === 'text' && lyr.textData && drag.origText) {
-        const sc = newH / Math.max(1, ob.h);
-        lyr.textData.fontSize = Math.max(8, Math.min(600, Math.round((drag.origText.fontSize || 48) * sc)));
-        lyr.textData.y = newCy;
-        if (lyr.textData.orientation !== 'vertical' && lyr.textData.align === 'left') {
-          lyr.textData.x = newCx - newW / 2;
-        } else if (lyr.textData.orientation !== 'vertical' && lyr.textData.align === 'right') {
-          lyr.textData.x = newCx + newW / 2;
-        } else {
-          lyr.textData.x = newCx;
+      if (snapshots.length === 1) {
+        const snap = snapshots[0];
+        const lyr = snap.layer;
+        if (lyr.smartSource?.canvas) {
+          lyr.smartSource.cx = newCx;
+          lyr.smartSource.cy = newCy;
+          lyr.smartSource.w = newW;
+          lyr.smartSource.h = newH;
+          lyr.smartSource.rotation = newRot;
+          doc.rasterizeSmartLayer(lyr);
+        } else if (lyr.kind === 'shape' && lyr.shapeData) {
+          lyr.shapeData.w = newW;
+          lyr.shapeData.h = newH;
+          lyr.shapeData.x = newCx - newW / 2;
+          lyr.shapeData.y = newCy - newH / 2;
+          lyr.shapeData.rotation = newRot;
+          doc.rasterizeShapeLayer(lyr);
+        } else if (lyr.kind === 'text' && lyr.textData && snap.origText) {
+          const sc = newH / Math.max(1, ob.h);
+          lyr.textData.fontSize = Math.max(8, Math.min(600, Math.round((snap.origText.fontSize || 48) * sc)));
+          lyr.textData.y = newCy;
+          if (lyr.textData.orientation !== 'vertical' && lyr.textData.align === 'left') {
+            lyr.textData.x = newCx - newW / 2;
+          } else if (lyr.textData.orientation !== 'vertical' && lyr.textData.align === 'right') {
+            lyr.textData.x = newCx + newW / 2;
+          } else {
+            lyr.textData.x = newCx;
+          }
+          lyr.textData.rotation = newRot;
+          doc.rasterizeTextLayer(lyr);
         }
-        lyr.textData.rotation = newRot;
-        doc.rasterizeTextLayer(lyr);
+      } else {
+        // Multi-Layer Group Transform around combined bounding box!
+        const scaleX = newW / Math.max(1, ob.w);
+        const scaleY = newH / Math.max(1, ob.h);
+        const dRot = newRot - (ob.rotation || 0);
+        const cosR = Math.cos(dRot);
+        const sinR = Math.sin(dRot);
+
+        for (const snap of snapshots) {
+          const lyr = snap.layer;
+          const lb = snap.bounds;
+          if (!lb) continue;
+          const relX = (lb.cx - ob.cx) * scaleX;
+          const relY = (lb.cy - ob.cy) * scaleY;
+          const tCx = newCx + relX * cosR - relY * sinR;
+          const tCy = newCy + relX * sinR + relY * cosR;
+
+          if (lyr.smartSource?.canvas && snap.origSmart) {
+            lyr.smartSource.cx = tCx;
+            lyr.smartSource.cy = tCy;
+            lyr.smartSource.w = Math.max(8, snap.origSmart.w * scaleX);
+            lyr.smartSource.h = Math.max(8, snap.origSmart.h * scaleY);
+            lyr.smartSource.rotation = (snap.origSmart.rotation || 0) + dRot;
+            doc.rasterizeSmartLayer(lyr);
+          } else if (lyr.kind === 'shape' && lyr.shapeData && snap.origShape) {
+            const sw = Math.max(8, snap.origShape.w * scaleX);
+            const sh = Math.max(8, snap.origShape.h * scaleY);
+            lyr.shapeData.w = sw;
+            lyr.shapeData.h = sh;
+            lyr.shapeData.x = tCx - sw / 2;
+            lyr.shapeData.y = tCy - sh / 2;
+            lyr.shapeData.rotation = (snap.origShape.rotation || 0) + dRot;
+            doc.rasterizeShapeLayer(lyr);
+          } else if (lyr.kind === 'text' && lyr.textData && snap.origText) {
+            const sc = (scaleX + scaleY) * 0.5;
+            lyr.textData.fontSize = Math.max(8, Math.min(600, Math.round((snap.origText.fontSize || 48) * sc)));
+            lyr.textData.x = tCx;
+            lyr.textData.y = tCy;
+            lyr.textData.rotation = (snap.origText.rotation || 0) + dRot;
+            doc.rasterizeTextLayer(lyr);
+          }
+        }
       }
 
       this._cachedTransformBounds = null;
-      doc.composeFast();
+      if (snapshots.length > 1) doc.compose();
+      else doc.composeFast();
       this.requestRender();
       return;
     }
@@ -3794,6 +4793,22 @@ class ProStudioMobileApp {
       drag.currY = pt.y;
       if (drag.mode === 'lasso') {
         drag.points.push({ x: pt.x, y: pt.y });
+      } else if (drag.mode === 'quickSelect') {
+        const last = drag.points[drag.points.length - 1];
+        if (!last || Math.hypot(pt.x - last.x, pt.y - last.y) >= Math.max(6, this.quickSelectRadius * 0.35)) {
+          drag.points.push({ x: pt.x, y: pt.y });
+          const now = performance.now();
+          if (now - (drag.lastLiveAt || 0) > 65) {
+            drag.lastLiveAt = now;
+            const liveMode = drag.combineMode === 'subtract' ? 'subtract' : 'add';
+            doc.applyQuickSelectBrush([pt], {
+              radius: this.quickSelectRadius,
+              tolerance: this.wandTolerance,
+              combineMode: liveMode,
+              sampleAllLayers: this.selectSampleAll
+            });
+          }
+        }
       }
       this.requestRender();
       return;
@@ -3996,6 +5011,11 @@ class ProStudioMobileApp {
   }
 
   handleSinglePointerUp() {
+    if (this._longPressTimer) {
+      clearTimeout(this._longPressTimer);
+      this._longPressTimer = null;
+    }
+
     const doc = this.session.doc;
     if (!doc) return;
 
@@ -4028,15 +5048,37 @@ class ProStudioMobileApp {
       return;
     }
 
+    if (drag.type === 'layerMarquee') {
+      const hits = doc.selectLayersInRect(drag.startX, drag.startY, drag.currX - drag.startX, drag.currY - drag.startY);
+      this._cachedTransformBounds = null;
+      this.syncHeaderAndHUD();
+      this.renderFloatingContextBar();
+      if (this.rightLayersOpen) this.renderRightLayersDrawer();
+      this.requestRender();
+      if (hits.length > 0) {
+        this.showToast(`Selected ${hits.length} object${hits.length > 1 ? 's' : ''} in canvas`);
+      }
+      return;
+    }
+
     if (drag.type === 'transform') {
       this.activeSmartGuides = [];
       this._cachedTransformBounds = null;
       doc.endFastInteraction();
       if (drag.changed) {
+        this._lastMoveTextTap = null;
+        const multiTag = (drag.targets?.length || 1) > 1 ? ` (${drag.targets.length} Layers)` : '';
         const label =
-          drag.mode === 'move' ? 'Move Layer' : drag.mode === 'rotate' ? 'Rotate Layer' : 'Scale Layer';
+          drag.mode === 'move' ? `Move Layer${multiTag}` : drag.mode === 'rotate' ? `Rotate Layer${multiTag}` : `Scale Layer${multiTag}`;
         doc.pushHistory(label);
         this.session.notify('layer.transformed');
+      } else if (drag.pendingDeselectId) {
+        doc.toggleLayerSelection(drag.pendingDeselectId);
+        this._cachedTransformBounds = null;
+        this.syncHeaderAndHUD();
+        this.renderFloatingContextBar();
+        if (this.rightLayersOpen) this.renderRightLayersDrawer();
+        this.requestRender();
       } else {
         this.requestRender();
       }
@@ -4055,12 +5097,31 @@ class ProStudioMobileApp {
     if (drag.type === 'select') {
       const w = drag.currX - drag.startX;
       const h = drag.currY - drag.startY;
-      if (drag.mode === 'rect') {
-        doc.setRectSelection(drag.startX, drag.startY, w, h);
+      if (drag.mode === 'object') {
+        const res = doc.selectObjectSmart(drag.startX, drag.startY, w, h, {
+          combineMode: this.selectCombineMode,
+          sensitivity: this.wandTolerance,
+          sampleAllLayers: this.selectSampleAll
+        });
+        if (res?.layerName) {
+          this.showToast(`🎯 Smart Selected "${res.layerName}"`);
+        } else {
+          this.showToast('🎯 Smart Object Selected');
+        }
+      } else if (drag.mode === 'quickSelect') {
+        doc.applyQuickSelectBrush(drag.points, {
+          radius: this.quickSelectRadius,
+          tolerance: this.wandTolerance,
+          combineMode: drag.combineMode === 'subtract' ? 'subtract' : 'add',
+          sampleAllLayers: this.selectSampleAll
+        });
+        this.showToast('🖌 Quick Selection Updated');
+      } else if (drag.mode === 'rect') {
+        doc.setRectSelection(drag.startX, drag.startY, w, h, this.selectCombineMode);
       } else if (drag.mode === 'ellipse') {
-        doc.setEllipseSelection(drag.startX, drag.startY, w, h);
+        doc.setEllipseSelection(drag.startX, drag.startY, w, h, this.selectCombineMode);
       } else if (drag.mode === 'lasso') {
-        doc.setLassoSelection(drag.points);
+        doc.setLassoSelection(drag.points, this.selectCombineMode);
       }
       this.session.notify('selection.changed');
       return;
@@ -4126,7 +5187,8 @@ class ProStudioMobileApp {
         h,
         fill: this.fgColor,
         stroke: this.bgColor,
-        strokeWidth: 3
+        strokeWidth: this.shapeStrokeWidth,
+        cornerRadius: this.shapeCornerRadius
       });
     }
   }
@@ -4212,6 +5274,10 @@ class ProStudioMobileApp {
     ctx.strokeRect(0, 0, doc.width, doc.height);
     ctx.restore();
 
+    if (this.showCanvasGrid) {
+      this.drawCanvasGrid(ctx, doc);
+    }
+
     this.drawSelectionOverlay(ctx, doc);
     this.drawLiveToolDragOverlay(ctx);
 
@@ -4232,11 +5298,95 @@ class ProStudioMobileApp {
     }
 
     ctx.restore();
+
+    if (this.showRulers) {
+      this.drawViewportRulers(ctx, canvas.width / dpr, canvas.height / dpr);
+    }
+
     ctx.restore();
 
     if (this.inlineTextSession) {
       this.syncInlineTextOverlay();
     }
+  }
+
+  drawCanvasGrid(ctx, doc) {
+    const step = this.zoom > 2 ? 32 : this.zoom > 0.7 ? 64 : 128;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(56, 181, 255, 0.22)';
+    ctx.lineWidth = 1 / this.zoom;
+    ctx.beginPath();
+    for (let x = step; x < doc.width; x += step) {
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, doc.height);
+    }
+    for (let y = step; y < doc.height; y += step) {
+      ctx.moveTo(0, y);
+      ctx.lineTo(doc.width, y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  drawViewportRulers(ctx, viewW, viewH) {
+    const size = 18;
+    ctx.save();
+    ctx.fillStyle = 'rgba(20, 22, 27, 0.9)';
+    ctx.fillRect(0, 0, viewW, size);
+    ctx.fillRect(0, 0, size, viewH);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, size + 0.5);
+    ctx.lineTo(viewW, size + 0.5);
+    ctx.moveTo(size + 0.5, 0);
+    ctx.lineTo(size + 0.5, viewH);
+    ctx.stroke();
+
+    const stepDoc = this.zoom > 2 ? 50 : this.zoom > 0.7 ? 100 : 200;
+    const minDocX = Math.floor((-this.panX) / this.zoom / stepDoc) * stepDoc;
+    const maxDocX = Math.ceil((viewW - this.panX) / this.zoom / stepDoc) * stepDoc;
+    const minDocY = Math.floor((-this.panY) / this.zoom / stepDoc) * stepDoc;
+    const maxDocY = Math.ceil((viewH - this.panY) / this.zoom / stepDoc) * stepDoc;
+
+    ctx.fillStyle = 'rgba(220, 228, 242, 0.75)';
+    ctx.strokeStyle = 'rgba(220, 228, 242, 0.45)';
+    ctx.font = '9px "JetBrains Mono", monospace';
+
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    for (let dx = minDocX; dx <= maxDocX; dx += stepDoc) {
+      const sx = Math.round(this.panX + dx * this.zoom) + 0.5;
+      if (sx < size || sx > viewW) continue;
+      ctx.beginPath();
+      ctx.moveTo(sx, size - 7);
+      ctx.lineTo(sx, size);
+      ctx.stroke();
+      ctx.fillText(String(dx), sx + 2, 2);
+    }
+
+    for (let dy = minDocY; dy <= maxDocY; dy += stepDoc) {
+      const sy = Math.round(this.panY + dy * this.zoom) + 0.5;
+      if (sy < size || sy > viewH) continue;
+      ctx.beginPath();
+      ctx.moveTo(size - 7, sy);
+      ctx.lineTo(size, sy);
+      ctx.stroke();
+      ctx.save();
+      ctx.translate(2, sy + 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.textAlign = 'right';
+      ctx.fillText(String(dy), 0, 0);
+      ctx.restore();
+    }
+
+    ctx.fillStyle = '#252830';
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#38b5ff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('px', size / 2, size / 2);
+    ctx.restore();
   }
 
   drawCheckerboard(ctx, width, height) {
@@ -4258,6 +5408,26 @@ class ProStudioMobileApp {
 
   drawSelectionOverlay(ctx, doc) {
     if (!doc.hasSelection || !doc.selectionOutline) return;
+
+    // Smart Translucent Tint Overlay (cached per selectionCanvas for 60fps performance!)
+    if (this.showSelectionTint && doc.selectionCanvas) {
+      if (this._selTintSrc !== doc.selectionCanvas) {
+        const tc = document.createElement('canvas');
+        tc.width = doc.width;
+        tc.height = doc.height;
+        const tCtx = tc.getContext('2d');
+        tCtx.drawImage(doc.selectionCanvas, 0, 0);
+        tCtx.globalCompositeOperation = 'source-in';
+        tCtx.fillStyle = 'rgba(56, 181, 255, 0.24)';
+        tCtx.fillRect(0, 0, doc.width, doc.height);
+        this._selTintCanvas = tc;
+        this._selTintSrc = doc.selectionCanvas;
+      }
+      if (this._selTintCanvas) {
+        ctx.drawImage(this._selTintCanvas, 0, 0);
+      }
+    }
+
     const out = doc.selectionOutline;
     const lw = 1.5 / this.zoom;
 
@@ -4315,13 +5485,48 @@ class ProStudioMobileApp {
     if (!drag) return;
     const lw = 1.5 / this.zoom;
 
+    if (drag.type === 'layerMarquee') {
+      ctx.save();
+      ctx.lineWidth = lw;
+      ctx.strokeStyle = '#38b5ff';
+      ctx.fillStyle = 'rgba(56, 181, 255, 0.14)';
+      ctx.setLineDash([6 / this.zoom, 4 / this.zoom]);
+      const x = Math.min(drag.startX, drag.currX);
+      const y = Math.min(drag.startY, drag.currY);
+      const w = Math.abs(drag.currX - drag.startX);
+      const h = Math.abs(drag.currY - drag.startY);
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeRect(x, y, w, h);
+      ctx.restore();
+      return;
+    }
+
     if (drag.type === 'select' || drag.type === 'sliceDraw') {
       ctx.save();
       ctx.lineWidth = lw;
-      ctx.strokeStyle = drag.type === 'sliceDraw' ? '#38b5ff' : '#378ef0';
-      ctx.fillStyle = drag.type === 'sliceDraw' ? 'rgba(56, 181, 255, 0.16)' : 'rgba(55, 142, 240, 0.14)';
+      if (drag.mode === 'quickSelect') {
+        const isSub = drag.combineMode === 'subtract';
+        ctx.strokeStyle = isSub ? '#f87171' : '#38b5ff';
+        ctx.fillStyle = isSub ? 'rgba(248, 113, 113, 0.16)' : 'rgba(56, 181, 255, 0.18)';
+        ctx.beginPath();
+        ctx.arc(drag.currX, drag.currY, this.quickSelectRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `bold ${14 / this.zoom}px Inter, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(isSub ? '−' : '+', drag.currX, drag.currY);
+        ctx.restore();
+        return;
+      }
+
+      const isObj = drag.mode === 'object';
+      ctx.strokeStyle = isObj ? '#a855f7' : drag.type === 'sliceDraw' ? '#38b5ff' : '#378ef0';
+      ctx.fillStyle = isObj ? 'rgba(168, 85, 247, 0.14)' : drag.type === 'sliceDraw' ? 'rgba(56, 181, 255, 0.16)' : 'rgba(55, 142, 240, 0.14)';
+      if (isObj) ctx.setLineDash([7 / this.zoom, 4 / this.zoom]);
       ctx.beginPath();
-      if (drag.type === 'sliceDraw' || drag.mode === 'rect') {
+      if (drag.type === 'sliceDraw' || drag.mode === 'rect' || isObj) {
         ctx.rect(drag.startX, drag.startY, drag.currX - drag.startX, drag.currY - drag.startY);
       } else if (drag.mode === 'ellipse') {
         const rx = Math.abs(drag.currX - drag.startX) / 2;
@@ -6989,7 +8194,7 @@ class ProStudioMobileApp {
               ${EXPORT_LOCATIONS.map((l) => `<option value="${l.id}" ${this.exportLocation === l.id ? 'selected' : ''}>${l.label}</option>`).join('')}
             </select>
           </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <div style="display:grid;grid-template-columns:minmax(0, 1fr) minmax(0, 1fr);gap:8px;">
             <div class="ctrl-field">
               <label>Subfolder Name</label>
               <input type="text" class="pc-input" id="exp-subfolder-in" value="${this.exportSubfolder}" placeholder="ProStudio" />
@@ -6999,7 +8204,7 @@ class ProStudioMobileApp {
               <input type="text" class="pc-input" id="exp-filename-in" value="${baseFileName}" />
             </div>
           </div>
-          <div id="exp-resolved-path" style="font-size:10.5px;font-family:var(--pc-font-mono);color:var(--pc-text-dim);padding-top:2px;"></div>
+          <div id="exp-resolved-path" style="font-size:10.5px;font-family:var(--pc-font-mono);color:var(--pc-text-dim);padding-top:2px;word-break:break-all;"></div>
         `;
 
         const permBtn = locCard.querySelector('#exp-perm-btn');
@@ -7017,9 +8222,9 @@ class ProStudioMobileApp {
 
         const refreshPathLabel = () => {
           const loc = EXPORT_LOCATIONS.find((l) => l.id === locSel.value) || EXPORT_LOCATIONS[0];
-          const ext = format === 'jpeg' ? 'jpg' : format;
+          const meta = ImageCodecs.getFormatMeta(format);
           const sub = subIn.value.trim();
-          const fn = (nameIn.value.trim() || 'artwork') + '.' + ext;
+          const fn = (nameIn.value.trim() || 'artwork') + '.' + meta.ext;
           pathOut.textContent =
             loc.id === 'picker'
               ? `Target: System Folder Picker ➔ ${fn}`
@@ -7044,18 +8249,14 @@ class ProStudioMobileApp {
 
         body.appendChild(locCard);
 
-        // 2. File Format Dropdown
+        // 2. Multi-Format File Format Dropdown (14 Professional Image & Document Formats!)
         const fmtGroup = document.createElement('div');
         fmtGroup.className = 'ctrl-field';
-        fmtGroup.innerHTML = `<label>File Format</label>`;
+        fmtGroup.innerHTML = `<label>File Format (${EXPORT_FORMATS.length} Formats Supported)</label>`;
         const sel = document.createElement('select');
         sel.className = 'pc-select';
-        for (const f of [
-          { id: 'psd', label: 'Layered Photoshop Document (.PSD — 8BPS Binary)' },
-          { id: 'png', label: 'PNG Lossless with Transparency (.PNG)' },
-          { id: 'jpeg', label: 'JPEG Photo (.JPG)' },
-          { id: 'webp', label: 'WebP Modern Image (.WEBP)' }
-        ]) {
+        sel.id = 'exp-format-select';
+        for (const f of EXPORT_FORMATS) {
           const o = document.createElement('option');
           o.value = f.id;
           o.textContent = f.label;
@@ -7082,19 +8283,28 @@ class ProStudioMobileApp {
         body.appendChild(estBox);
 
         const updateEstimate = () => {
-          const outW = Math.round((doc.width * scalePct) / 100);
-          const outH = Math.round((doc.height * scalePct) / 100);
+          const meta = ImageCodecs.getFormatMeta(format);
+          const outW = format === 'ico' ? 256 : Math.round((doc.width * scalePct) / 100);
+          const outH = format === 'ico' ? 256 : Math.round((doc.height * scalePct) / 100);
           let approxKB = Math.round((outW * outH * 4) / 1024);
           if (format === 'psd') {
             approxKB = Math.round((doc.width * doc.height * 4 * (doc.layers.length + 1)) / 1024);
-          } else if (format === 'jpeg' || format === 'webp') {
+          } else if (format === 'bmp' || format === 'tiff' || format === 'tga') {
+            approxKB = Math.round((outW * outH * 4) / 1024);
+          } else if (format === 'ppm') {
+            approxKB = Math.round((outW * outH * 3) / 1024);
+          } else if (format === 'ico') {
+            approxKB = 42;
+          } else if (format === 'gif') {
+            approxKB = Math.max(8, Math.round((outW * outH * 0.35) / 1024));
+          } else if (format === 'jpeg' || format === 'webp' || format === 'avif' || format === 'pdf') {
             approxKB = Math.max(12, Math.round(approxKB * (quality / 100) * 0.14));
           } else {
             approxKB = Math.round(approxKB * 0.42);
           }
           estBox.innerHTML = `
             <div>Dimensions<strong>${outW}×${outH}</strong></div>
-            <div>Layers<strong>${format === 'psd' ? doc.layers.length : '1 (Flat)'}</strong></div>
+            <div>Layers<strong>${meta.layered ? doc.layers.length : '1 (Flat)'}</strong></div>
             <div>Est. Size<strong>~${approxKB > 1024 ? (approxKB / 1024).toFixed(1) + ' MB' : approxKB + ' KB'}</strong></div>
           `;
           refreshPathLabel();
@@ -7128,18 +8338,14 @@ class ProStudioMobileApp {
     );
   }
 
-  performExport(format, quality = 0.92, scale = 1.0, customBaseName = null) {
+  async performExport(format, quality = 0.92, scale = 1.0, customBaseName = null) {
     const doc = this.session.doc;
     if (!doc) return;
     doc.compose();
-    const baseName = customBaseName || doc.title.replace(/\.(psd|png|jpg|jpeg|webp)$/i, '') || 'prostudio-mobile';
-
-    if (format === 'psd') {
-      const psdBytes = PsdCodec.encodePsd(doc, doc.compositeCanvas);
-      const blob = new Blob([psdBytes], { type: 'image/vnd.adobe.photoshop' });
-      this.saveBlobToConfiguredLocation(blob, `${baseName}.psd`, 'image/vnd.adobe.photoshop');
-      return;
-    }
+    const baseName =
+      customBaseName ||
+      doc.title.replace(/\.(psd|psb|png|jpg|jpeg|webp|avif|gif|bmp|tif|tiff|tga|ico|svg|pdf|ppm|psproj)$/i, '') ||
+      'prostudio-mobile';
 
     const outW = Math.max(1, Math.round(doc.width * scale));
     const outH = Math.max(1, Math.round(doc.height * scale));
@@ -7147,23 +8353,27 @@ class ProStudioMobileApp {
     outCanvas.width = outW;
     outCanvas.height = outH;
     const oCtx = outCanvas.getContext('2d');
-    if (format === 'jpeg') {
+    if (format === 'jpeg' || format === 'ppm') {
       oCtx.fillStyle = '#ffffff';
       oCtx.fillRect(0, 0, outW, outH);
     }
     oCtx.drawImage(doc.compositeCanvas, 0, 0, outW, outH);
 
-    const mime = format === 'jpeg' ? 'image/jpeg' : format === 'webp' ? 'image/webp' : 'image/png';
-    const ext = format === 'jpeg' ? 'jpg' : format;
-
-    outCanvas.toBlob(
-      (blob) => {
-        if (!blob) return;
-        this.saveBlobToConfiguredLocation(blob, `${baseName}.${ext}`, mime);
-      },
-      mime,
-      quality
-    );
+    try {
+      const encoded = await ImageCodecs.encodeCanvasOrDoc(format, doc, outCanvas, {
+        quality,
+        scale,
+        psdCodec: PsdCodec,
+        projectSerializer: () => this.serializeCurrentProject()
+      });
+      if (!encoded?.blob) return;
+      if (encoded.fallbackFrom === 'avif') {
+        this.showToast('AVIF encoder unavailable on this WebView — exported as .WEBP');
+      }
+      this.saveBlobToConfiguredLocation(encoded.blob, `${baseName}.${encoded.ext}`, encoded.mime);
+    } catch (err) {
+      this.showToast(`Export error: ${err.message}`);
+    }
   }
 
   /**
@@ -7321,31 +8531,12 @@ class ProStudioMobileApp {
   }
 
   async decodeImageFileToDrawable(file) {
-    if (typeof createImageBitmap === 'function') {
-      try {
-        return await createImageBitmap(file);
-      } catch (_) {
-        // Fallback to HTMLImageElement below for WebViews with strict ImageBitmap codecs
-      }
-    }
-    return new Promise((resolve, reject) => {
-      const url = URL.createObjectURL(file);
-      const img = new Image();
-      img.onload = () => {
-        URL.revokeObjectURL(url);
-        resolve(img);
-      };
-      img.onerror = () => {
-        URL.revokeObjectURL(url);
-        reject(new Error('Unsupported image format'));
-      };
-      img.src = url;
-    });
+    return ImageCodecs.decodeFileToDrawable(file);
   }
 
   async handlePlaceImageAsLayer(file) {
     const name = (file?.name || '').toLowerCase();
-    if (name.endsWith('.psd') || name.endsWith('.psb') || /\.(ttf|otf|woff2?)$/i.test(name)) {
+    if (name.endsWith('.psd') || name.endsWith('.psb') || name.endsWith('.psproj') || name.endsWith('.json') || /\.(ttf|otf|woff2?)$/i.test(name)) {
       return this.handleOpenFile(file);
     }
     const doc = this.session.doc;
@@ -7405,6 +8596,7 @@ class ProStudioMobileApp {
         doc.layers.push(lyr);
       }
       doc.activeLayerId = lyr.id;
+      doc.setSelectedLayerIds([lyr.id]);
       doc.editingMask = false;
       this._cachedTransformBounds = null;
       doc.pushHistory(`Import ${lyr.name}`);
@@ -7471,14 +8663,19 @@ class ProStudioMobileApp {
 
   /**
    * Smart Photoshop Mobile Back Button Hierarchy:
-   * Closes open dropdowns -> modals -> live text edit -> right layers drawer -> bottom sheets -> active crop -> New Doc overlay.
+   * Closes open dropdowns -> canvas inspector -> modals -> live text edit -> right layers drawer -> bottom sheets -> active crop -> New Doc overlay.
    * When on the main canvas, auto-saves immediately and requires a double-Back press within 2.5s to exit!
    */
   handleBackAction() {
-    // 1. Any open dropdown menu or tool flyout?
+    // 1. Any open dropdown menu, tool flyout, or on-canvas control popover?
     const openPopovers = Array.from(document.querySelectorAll('.dropdown-popover')).filter((el) => !el.hidden);
     if (openPopovers.length > 0) {
       this.closeAllDropdowns();
+      return true;
+    }
+    const ccp = document.getElementById('canvas-control-popover');
+    if (ccp && !ccp.hidden) {
+      this.closeCanvasPopover();
       return true;
     }
 
@@ -7979,6 +9176,8 @@ class ProStudioMobileApp {
 
   showToast(message) {
     const container = document.getElementById('toast-container');
+    if (!container) return;
+    while (container.firstChild) container.firstChild.remove();
     const toast = document.createElement('div');
     toast.className = 'pc-toast';
     toast.textContent = message;
@@ -7987,7 +9186,7 @@ class ProStudioMobileApp {
       toast.style.opacity = '0';
       toast.style.transition = 'opacity 0.2s ease';
       setTimeout(() => toast.remove(), 220);
-    }, 2100);
+    }, 2000);
   }
 }
 
