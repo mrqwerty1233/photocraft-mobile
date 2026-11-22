@@ -11,6 +11,24 @@ import { BrushEngine, BRUSH_PRESETS } from './engine/brush-engine.js';
 import { StudioDoc, StudioSession, BLEND_MODES } from './engine/studio-engine.js';
 import { SampleProjects } from './engine/sample-projects.js';
 import { PhotoshopLayerStyleDialog } from './ui/layer-style-dialog.js';
+import { PhotoshopNewDocumentScreen } from './ui/new-document-screen.js';
+
+const WORKSPACE_SETTINGS_KEY = 'prostudio_workspace_settings_v1';
+
+const TOOLBAR_CONFIG_ITEMS = [
+  { id: 'paint', label: '🖌 Brush & Retouch Group', category: 'group' },
+  { id: 'select', label: '▭ Selection & Subject Group', category: 'group' },
+  { id: 'crop', label: '⬠ Crop, Perspective & Slice', category: 'group' },
+  { id: 'text', label: 'T Type & Custom Fonts', category: 'group' },
+  { id: 'move', label: '✥ Move & Transform Group', category: 'group' },
+  { id: 'fill', label: '🪣 Fill, Gradient & Shapes', category: 'group' },
+  { id: 'pin_eraser', label: '⌫ Quick Eraser Button', category: 'pin' },
+  { id: 'pin_subject', label: '✨ Quick Select Subject', category: 'pin' },
+  { id: 'pin_perspCrop', label: '⬠ Quick Perspective Crop', category: 'pin' },
+  { id: 'pin_eyedropper', label: '💧 Quick Eyedropper', category: 'pin' },
+  { id: 'pin_hand', label: '✋ Quick Hand Pan', category: 'pin' },
+  { id: 'pin_fx', label: 'fx Quick Layer Style', category: 'pin' }
+];
 
 const PRESET_SWATCHES = [
   '#378ef0', '#1d68c4', '#2ec4b6', '#38c172', '#f59e0b', '#ec5b62', '#e11d48', '#ffffff',
@@ -224,10 +242,272 @@ class ProStudioMobileApp {
       this.showToast(msg || (granted ? 'Storage Permission Granted' : 'Using Scoped MediaStore Storage'));
     };
 
+    this.workspaceSettings = this.loadWorkspaceSettings();
+    this.rightLayersOpen = false;
+    this.rightDrawerTab = 'layers';
+    this.newDocScreen = new PhotoshopNewDocumentScreen(this);
+
     this.initDOM();
+    this.initRightLayersDrawer();
+    this.initToolbarFreeFloatDrag();
+    this.initPinnedToolButtons();
+    this.applyWorkspaceSettings();
     this.restorePersistedFonts();
     this.loadDocument(SampleProjects.createOceanWaveProject());
     this.startSelectionAntsTimer();
+
+    // Start on Photoshop-style "New Document" Canvas Selection Screen on launch!
+    if (this.workspaceSettings.showNewDocOnStart !== false) {
+      this.newDocScreen.open(true);
+    }
+  }
+
+  getDefaultWorkspaceSettings() {
+    return {
+      toolbarPosition: 'bottom', // 'bottom' | 'top' | 'left' | 'right'
+      toolbarFreeFloat: false,
+      toolbarCols: 2, // 1 | 2 (for Side Left/Right & Free-Float modes)
+      toolbarFloatPos: { x: 10, y: 112 },
+      showBrushPill: true,
+      showNewDocOnStart: true,
+      showHudBadges: true,
+      visibleTools: {
+        paint: true,
+        select: true,
+        crop: true,
+        text: true,
+        move: true,
+        fill: true,
+        pin_eraser: false,
+        pin_subject: false,
+        pin_perspCrop: false,
+        pin_eyedropper: false,
+        pin_hand: false,
+        pin_fx: false
+      }
+    };
+  }
+
+  loadWorkspaceSettings() {
+    const def = this.getDefaultWorkspaceSettings();
+    try {
+      const raw = localStorage.getItem(WORKSPACE_SETTINGS_KEY);
+      if (!raw) return def;
+      const parsed = JSON.parse(raw);
+      return {
+        ...def,
+        ...parsed,
+        toolbarFloatPos: { ...def.toolbarFloatPos, ...(parsed.toolbarFloatPos || {}) },
+        visibleTools: { ...def.visibleTools, ...(parsed.visibleTools || {}) }
+      };
+    } catch {
+      return def;
+    }
+  }
+
+  saveWorkspaceSettings() {
+    try {
+      localStorage.setItem(WORKSPACE_SETTINGS_KEY, JSON.stringify(this.workspaceSettings));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }
+
+  applyWorkspaceSettings() {
+    const ws = this.workspaceSettings;
+    const belt = document.getElementById('tools-belt');
+    const shell = document.getElementById('mobile-app-shell');
+    if (belt) {
+      belt.classList.remove('tb-pos-bottom', 'tb-pos-top', 'tb-pos-left', 'tb-pos-right', 'tb-free-float', 'tb-cols-2');
+
+      if (ws.toolbarFreeFloat) {
+        belt.classList.add('tb-free-float');
+        const maxW = Math.max(120, (shell?.clientWidth || 412) - 96);
+        const maxH = Math.max(140, (shell?.clientHeight || 820) - 220);
+        const fx = Math.max(4, Math.min(maxW, ws.toolbarFloatPos?.x ?? 10));
+        const fy = Math.max(54, Math.min(maxH, ws.toolbarFloatPos?.y ?? 112));
+        belt.style.left = `${fx}px`;
+        belt.style.top = `${fy}px`;
+        belt.style.right = 'auto';
+        belt.style.bottom = 'auto';
+      } else {
+        belt.classList.add(`tb-pos-${ws.toolbarPosition || 'bottom'}`);
+        belt.style.left = '';
+        belt.style.top = '';
+        belt.style.right = '';
+        belt.style.bottom = '';
+      }
+
+      if (ws.toolbarCols === 2) {
+        belt.classList.add('tb-cols-2');
+      }
+
+      const dockBtn = document.getElementById('btn-toolbar-dock-toggle');
+      if (dockBtn) {
+        dockBtn.classList.toggle('active', Boolean(ws.toolbarFreeFloat));
+        dockBtn.title = ws.toolbarFreeFloat ? 'Snap Toolbar Back to Dock' : 'Detach & Move Toolbar Freely';
+      }
+
+      // Show/Hide user-configured toolbar items
+      const vt = ws.visibleTools || {};
+      belt.querySelectorAll('[data-tool-item]').forEach((wrap) => {
+        const key = wrap.dataset.toolItem;
+        wrap.hidden = vt[key] === false;
+      });
+    }
+
+    // Floating brush pill visibility & offset when toolbar is docked left
+    const brushPill = document.getElementById('floating-brush-pill');
+    if (brushPill) {
+      brushPill.style.display = ws.showBrushPill === false ? 'none' : '';
+      if (!ws.toolbarFreeFloat && ws.toolbarPosition === 'left') {
+        brushPill.style.left = ws.toolbarCols === 2 ? '106px' : '64px';
+      } else {
+        brushPill.style.left = '';
+      }
+    }
+
+    const hudTop = document.getElementById('canvas-hud-top');
+    if (hudTop) {
+      hudTop.style.display = ws.showHudBadges === false ? 'none' : '';
+    }
+
+    this.requestRender();
+  }
+
+  initToolbarFreeFloatDrag() {
+    const belt = document.getElementById('tools-belt');
+    const handle = document.getElementById('toolbar-float-handle');
+    const colsBtn = document.getElementById('btn-toolbar-cols');
+    const dockBtn = document.getElementById('btn-toolbar-dock-toggle');
+    if (!belt || !handle) return;
+
+    colsBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.workspaceSettings.toolbarCols = this.workspaceSettings.toolbarCols === 2 ? 1 : 2;
+      this.saveWorkspaceSettings();
+      this.applyWorkspaceSettings();
+    });
+
+    dockBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.workspaceSettings.toolbarFreeFloat = !this.workspaceSettings.toolbarFreeFloat;
+      this.saveWorkspaceSettings();
+      this.applyWorkspaceSettings();
+      this.showToast(
+        this.workspaceSettings.toolbarFreeFloat
+          ? 'Free-Move Toolbar Enabled — Drag handle to move'
+          : `Toolbar docked to ${this.workspaceSettings.toolbarPosition}`
+      );
+      if (this.activeSheet === 'settings') this.renderSettingsSheet();
+    });
+
+    let dragging = false;
+    let startX = 0;
+    let startY = 0;
+    let origX = 0;
+    let origY = 0;
+
+    handle.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('button')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const shell = document.getElementById('mobile-app-shell');
+      const shellRect = shell.getBoundingClientRect();
+      const beltRect = belt.getBoundingClientRect();
+
+      // Auto-detach into free-float mode if dragged from Side Left/Right (exact Photoshop UX!)
+      if (!this.workspaceSettings.toolbarFreeFloat) {
+        this.workspaceSettings.toolbarFreeFloat = true;
+        this.workspaceSettings.toolbarFloatPos = {
+          x: Math.round(beltRect.left - shellRect.left),
+          y: Math.round(beltRect.top - shellRect.top)
+        };
+        this.applyWorkspaceSettings();
+      }
+
+      dragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      origX = this.workspaceSettings.toolbarFloatPos.x;
+      origY = this.workspaceSettings.toolbarFloatPos.y;
+      handle.setPointerCapture(e.pointerId);
+      this.closeAllDropdowns();
+    });
+
+    handle.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      const shell = document.getElementById('mobile-app-shell');
+      const maxX = Math.max(40, shell.clientWidth - belt.offsetWidth - 4);
+      const maxY = Math.max(60, shell.clientHeight - belt.offsetHeight - 60);
+      const nx = Math.max(4, Math.min(maxX, Math.round(origX + (e.clientX - startX))));
+      const ny = Math.max(52, Math.min(maxY, Math.round(origY + (e.clientY - startY))));
+      this.workspaceSettings.toolbarFloatPos = { x: nx, y: ny };
+      belt.style.left = `${nx}px`;
+      belt.style.top = `${ny}px`;
+    });
+
+    const endDrag = () => {
+      if (!dragging) return;
+      dragging = false;
+      this.saveWorkspaceSettings();
+    };
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', endDrag);
+  }
+
+  initPinnedToolButtons() {
+    document.querySelectorAll('[data-pin-tool]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.closeAllDropdowns();
+        this.selectTool(btn.dataset.pinTool);
+      });
+    });
+    document.querySelectorAll('[data-pin-action]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.closeAllDropdowns();
+        const act = btn.dataset.pinAction;
+        if (act === 'subject') {
+          this.selectTool('select');
+          this.session.dispatch('selection.subject');
+          this.showToast('Select ➔ Subject applied!');
+        } else if (act === 'fx') {
+          this.openLayerStylesModal();
+        }
+      });
+    });
+  }
+
+  loadSampleProject(kind) {
+    if (kind === 'space') {
+      this.loadDocument(SampleProjects.createDeepSpaceProject());
+      this.showToast('Loaded Deep-Space-Horizon.psd');
+    } else {
+      this.loadDocument(SampleProjects.createOceanWaveProject());
+      this.showToast('Loaded Ocean-Wave-Poster.psd');
+    }
+  }
+
+  createConfiguredDocument({ width, height, title, backgroundFill = '#ffffff', physicalLabel = '' }) {
+    const doc = new StudioDoc(width, height, title || 'Untitled-1.psd');
+    if (backgroundFill === 'transparent') {
+      const lyr = doc.createLayerObject({ name: 'Layer 1', kind: 'raster' });
+      doc.layers.push(lyr);
+      doc.activeLayerId = lyr.id;
+    } else {
+      const bg = doc.createLayerObject({ name: 'Background', kind: 'raster' });
+      const ctx = bg.canvas.getContext('2d');
+      ctx.fillStyle = backgroundFill || '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+      doc.layers.push(bg);
+      doc.activeLayerId = bg.id;
+    }
+    doc.compose();
+    doc.pushHistory('New Document');
+    this.loadDocument(doc);
+    this.showToast(`Created ${doc.title} (${physicalLabel || `${width}×${height} px`})`);
   }
 
   get allFonts() {
@@ -397,6 +677,9 @@ class ProStudioMobileApp {
       if (this.activeSheet !== 'none') {
         this.renderActiveSheet();
       }
+      if (this.rightLayersOpen) {
+        this.renderRightLayersDrawer();
+      }
       this.renderFloatingContextBar();
       this.requestRender();
     });
@@ -422,6 +705,16 @@ class ProStudioMobileApp {
     this.closeAllDropdowns();
     if (!wasOpen) {
       if (populateFn) populateFn(el);
+      // Smart left/right flyout alignment when toolbar is in Free-Float mode
+      el.classList.remove('float-open-left', 'float-open-right');
+      const belt = document.getElementById('tools-belt');
+      if (belt && belt.classList.contains('tb-free-float') && belt.contains(el)) {
+        const shell = document.getElementById('mobile-app-shell');
+        const beltRect = belt.getBoundingClientRect();
+        const shellRect = shell.getBoundingClientRect();
+        const centerX = beltRect.left - shellRect.left + beltRect.width / 2;
+        el.classList.add(centerX > shellRect.width * 0.5 ? 'float-open-left' : 'float-open-right');
+      }
       el.hidden = false;
     }
   }
@@ -445,7 +738,7 @@ class ProStudioMobileApp {
   populateFileDropdown() {
     const menu = document.getElementById('popover-file-menu');
     menu.innerHTML = `<div class="dropdown-section-label">Document &amp; File I/O</div>`;
-    this.addDropdownMenuItem(menu, '📄 New Blank Canvas...', '⌘N', false, () => this.openNewDocumentModal());
+    this.addDropdownMenuItem(menu, '📄 New Document / Presets...', '⌘N', false, () => this.newDocScreen.open(true));
     this.addDropdownMenuItem(menu, '📂 Open PSD or Image...', '⌘O', false, () => document.getElementById('file-input-open').click());
     this.addDropdownMenuItem(menu, '🖼️ Place Image as Layer...', '', false, () => document.getElementById('file-input-place-layer').click());
     this.addDropdownMenuItem(menu, '🔤 Import Font (.ttf/.otf)...', '', false, () => document.getElementById('file-input-font').click());
@@ -456,10 +749,10 @@ class ProStudioMobileApp {
 
     const lbl2 = document.createElement('div');
     lbl2.className = 'dropdown-section-label';
-    lbl2.textContent = 'Storage & Export';
+    lbl2.textContent = 'Workspace, Storage & Export';
     menu.appendChild(lbl2);
 
-    const locObj = EXPORT_LOCATIONS.find((l) => l.id === this.exportLocation);
+    this.addDropdownMenuItem(menu, '⚙️ Workspace & Toolbar Settings...', '', false, () => this.toggleSheet('settings'));
     this.addDropdownMenuItem(
       menu,
       '📁 Storage & Save Location...',
@@ -2665,12 +2958,258 @@ class ProStudioMobileApp {
   }
 
   /* ==========================================================================
-   * Bottom Panels (Layers, Adjustments, Filters, Storage/PSD)
+   * Right-Side Docked Layers Drawer (Photoshop Style) & Bottom Sheets
    * ========================================================================== */
+  initRightLayersDrawer() {
+    const toggleBtn = document.getElementById('btn-toggle-right-layers');
+    const closeBtn = document.getElementById('btn-close-right-layers');
+    toggleBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.setRightLayersOpen(!this.rightLayersOpen);
+    });
+    closeBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.setRightLayersOpen(false);
+    });
+
+    document.querySelectorAll('.rd-tab').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.rightDrawerTab = btn.dataset.rdtab || 'layers';
+        document.querySelectorAll('.rd-tab').forEach((t) => {
+          t.classList.toggle('active', t.dataset.rdtab === this.rightDrawerTab);
+        });
+        this.renderRightLayersDrawer();
+      });
+    });
+  }
+
+  setRightLayersOpen(isOpen) {
+    this.rightLayersOpen = Boolean(isOpen);
+    const drawer = document.getElementById('right-layers-drawer');
+    const arrow = document.getElementById('right-layers-arrow');
+    if (drawer) drawer.classList.toggle('open', this.rightLayersOpen);
+    if (arrow) arrow.textContent = this.rightLayersOpen ? '»' : '«';
+
+    if (this.rightLayersOpen) {
+      // Close bottom sheet if open so canvas stays clean
+      if (this.activeSheet !== 'none') {
+        this.activeSheet = 'none';
+        document.getElementById('bottom-sheet').classList.remove('open');
+        document.getElementById('sheet-backdrop').classList.remove('open');
+      }
+      this.renderRightLayersDrawer();
+    }
+    this.syncBottomNavActive();
+    this.hapticTick();
+  }
+
+  syncBottomNavActive() {
+    document.querySelectorAll('.nav-tab-btn').forEach((btn) => {
+      const sh = btn.dataset.sheet;
+      const isAct =
+        this.activeSheet !== 'none'
+          ? sh === this.activeSheet
+          : this.rightLayersOpen
+          ? sh === 'layers'
+          : sh === 'none';
+      btn.classList.toggle('active', isAct);
+    });
+  }
+
+  renderRightLayersDrawer() {
+    const doc = this.session.doc;
+    const body = document.getElementById('right-drawer-body');
+    const footer = document.getElementById('right-drawer-footer');
+    if (!doc || !body || !footer) return;
+
+    body.innerHTML = '';
+    footer.innerHTML = '';
+
+    // TAB 2: SWATCHES (Matches top-right Photoshop Swatches Panel in user's photo!)
+    if (this.rightDrawerTab === 'swatches') {
+      const swCard = document.createElement('div');
+      swCard.className = 'rd-ctrl-box';
+      swCard.innerHTML = `<div style="font-size:10.5px;font-weight:700;color:#9ca3af;text-transform:uppercase;">Color Swatches</div>`;
+      const grid = document.createElement('div');
+      grid.className = 'rd-swatch-grid';
+      const extendedPalette = [
+        '#ffffff', '#e5e7eb', '#9ca3af', '#4b5563', '#1f2937', '#000000', '#fef08a', '#fde047',
+        '#facc15', '#f59e0b', '#f97316', '#ea580c', '#ef4444', '#dc2626', '#be123c', '#ec4899',
+        '#f472b6', '#d946ef', '#a855f7', '#7c3aed', '#6366f1', '#3b82f6', '#2563eb', '#1d4ed8',
+        '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981', '#22c55e', '#84cc16', '#78350f', '#92400e',
+        ...PRESET_SWATCHES
+      ];
+      for (const hex of extendedPalette) {
+        const cell = document.createElement('button');
+        cell.type = 'button';
+        cell.className = `rd-swatch-cell${this.fgColor.toLowerCase() === hex.toLowerCase() ? ' active' : ''}`;
+        cell.style.background = hex;
+        cell.title = hex;
+        cell.addEventListener('click', () => {
+          this.fgColor = hex;
+          this.syncColorSwatches();
+          this.renderRightLayersDrawer();
+        });
+        grid.appendChild(cell);
+      }
+      swCard.appendChild(grid);
+
+      const customRow = document.createElement('div');
+      customRow.className = 'rd-ctrl-row';
+      customRow.style.marginTop = '6px';
+      customRow.innerHTML = `
+        <label style="font-size:11px;color:#cbd5e1;flex:1;">FG / BG Color</label>
+        <input type="color" class="ps-fx-swatch" id="rd-fg-in" value="${this.fgColor}" title="Foreground Color" />
+        <input type="color" class="ps-fx-swatch" id="rd-bg-in" value="${this.bgColor}" title="Background Color" />
+      `;
+      customRow.querySelector('#rd-fg-in').addEventListener('input', (e) => {
+        this.fgColor = e.target.value;
+        this.syncColorSwatches();
+      });
+      customRow.querySelector('#rd-bg-in').addEventListener('input', (e) => {
+        this.bgColor = e.target.value;
+        this.syncColorSwatches();
+      });
+      swCard.appendChild(customRow);
+      body.appendChild(swCard);
+
+      footer.innerHTML = `<button type="button" class="rd-icon-btn" id="rd-open-full-picker">Full Color Picker...</button>`;
+      footer.querySelector('#rd-open-full-picker').addEventListener('click', () => this.openColorPickerModal());
+      return;
+    }
+
+    // TAB 1: LAYERS (Matches Right-Side Photoshop Layers Panel!)
+    const active = doc.activeLayer;
+    if (active) {
+      const ctrl = document.createElement('div');
+      ctrl.className = 'rd-ctrl-box';
+
+      const row1 = document.createElement('div');
+      row1.className = 'rd-ctrl-row';
+      const bmSel = document.createElement('select');
+      bmSel.className = 'ps-fx-select';
+      for (const bm of BLEND_MODES) {
+        const o = document.createElement('option');
+        o.value = bm.id;
+        o.textContent = bm.label;
+        if (active.blendMode === bm.id) o.selected = true;
+        bmSel.appendChild(o);
+      }
+      bmSel.addEventListener('change', () => {
+        active.blendMode = bmSel.value;
+        doc.pushHistory(`Blend Mode: ${bmSel.value}`);
+        this.session.notify('layer.blendMode');
+      });
+
+      const actSel = document.createElement('select');
+      actSel.className = 'ps-fx-select';
+      actSel.style.maxWidth = '86px';
+      actSel.innerHTML = `
+        <option value="">More ▾</option>
+        <option value="fx">Layer Style (fx)...</option>
+        <option value="clip">Clipping Mask</option>
+        <option value="invMask">Invert Mask</option>
+        <option value="merge">Merge Down</option>
+        <option value="flatten">Flatten Image</option>
+      `;
+      actSel.addEventListener('change', () => {
+        const v = actSel.value;
+        actSel.value = '';
+        if (v === 'fx') this.openLayerStylesModal();
+        else if (v === 'clip') this.session.dispatch('layer.toggleClipping');
+        else if (v === 'invMask') this.session.dispatch('layer.invertMask');
+        else if (v === 'merge') this.session.dispatch('layer.mergeDown');
+        else if (v === 'flatten') this.session.dispatch('layer.flatten');
+      });
+
+      row1.appendChild(bmSel);
+      row1.appendChild(actSel);
+      ctrl.appendChild(row1);
+
+      const opacVal = Math.round((active.opacity ?? 1) * 100);
+      const fillVal = Math.round((active.fill ?? 1) * 100);
+
+      const opacRow = document.createElement('div');
+      opacRow.className = 'ps-fx-slider-row';
+      opacRow.innerHTML = `
+        <span class="ps-fx-lbl" style="min-width:44px;">Opac:</span>
+        <input type="range" class="pc-range ps-fx-range" min="0" max="100" value="${opacVal}" />
+        <span class="ps-fx-unit" style="min-width:30px;text-align:right;">${opacVal}%</span>
+      `;
+      opacRow.querySelector('input').addEventListener('input', (e) => {
+        const v = Number(e.target.value);
+        opacRow.querySelector('.ps-fx-unit').textContent = `${v}%`;
+        active.opacity = v / 100;
+        doc.compose();
+        this.requestRender();
+      });
+      opacRow.querySelector('input').addEventListener('change', () => doc.pushHistory('Layer Opacity'));
+      ctrl.appendChild(opacRow);
+
+      const fillRow = document.createElement('div');
+      fillRow.className = 'ps-fx-slider-row';
+      fillRow.innerHTML = `
+        <span class="ps-fx-lbl" style="min-width:44px;">Fill:</span>
+        <input type="range" class="pc-range ps-fx-range" min="0" max="100" value="${fillVal}" />
+        <span class="ps-fx-unit" style="min-width:30px;text-align:right;">${fillVal}%</span>
+      `;
+      fillRow.querySelector('input').addEventListener('input', (e) => {
+        const v = Number(e.target.value);
+        fillRow.querySelector('.ps-fx-unit').textContent = `${v}%`;
+        active.fill = v / 100;
+        doc.compose();
+        this.requestRender();
+      });
+      fillRow.querySelector('input').addEventListener('change', () => doc.pushHistory('Fill Opacity'));
+      ctrl.appendChild(fillRow);
+
+      body.appendChild(ctrl);
+    }
+
+    // Layer List + Expandable Photoshop Effects Sub-tree
+    const list = document.createElement('div');
+    list.className = 'layer-list';
+    this.populateLayerStackRows(list, doc);
+    body.appendChild(list);
+
+    // Bottom Photoshop Layers Bar (fx | Mask | Adj | Dup | +New | Delete) — Matches Photo 3!
+    const mkFootBtn = (html, title, cls, fn) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `rd-icon-btn${cls ? ' ' + cls : ''}`;
+      b.title = title;
+      b.innerHTML = html;
+      b.addEventListener('click', fn);
+      footer.appendChild(b);
+    };
+    mkFootBtn('<i style="font-weight:800;">fx</i>', 'Add a Layer Style', '', () => this.openLayerStylesModal());
+    mkFootBtn('◉', 'Add Layer Mask', '', () => this.session.dispatch('layer.addMask', { fromSelection: doc.hasSelection }));
+    mkFootBtn('◐', 'Add Adjustment Layer', '', () => {
+      this.setRightLayersOpen(false);
+      this.toggleSheet('adjustments');
+    });
+    mkFootBtn('⧉', 'Duplicate Layer', '', () => this.session.dispatch('layer.duplicate'));
+    mkFootBtn('+', 'Create a New Layer', '', () => this.session.dispatch('layer.new'));
+    mkFootBtn('🗑', 'Delete Layer', 'danger', () => this.session.dispatch('layer.delete'));
+  }
+
   toggleSheet(sheetId) {
+    if (sheetId === 'layers') {
+      this.setRightLayersOpen(!this.rightLayersOpen);
+      return;
+    }
+    if (sheetId === 'none') {
+      this.closeSheet();
+      this.setRightLayersOpen(false);
+      return;
+    }
     if (this.activeSheet === sheetId) {
       this.closeSheet();
       return;
+    }
+    if (this.rightLayersOpen) {
+      this.setRightLayersOpen(false);
     }
     if (this.session.doc?.livePreview && sheetId !== 'filters') {
       this.session.doc.livePreview = null;
@@ -2680,9 +3219,7 @@ class ProStudioMobileApp {
     this.activeSheet = sheetId;
     document.getElementById('bottom-sheet').classList.add('open');
     document.getElementById('sheet-backdrop').classList.add('open');
-    document.querySelectorAll('.nav-tab-btn').forEach((btn) => {
-      btn.classList.toggle('active', btn.dataset.sheet === sheetId);
-    });
+    this.syncBottomNavActive();
     this.hapticTick();
     this.renderActiveSheet();
   }
@@ -2696,16 +3233,14 @@ class ProStudioMobileApp {
     this.activeSheet = 'none';
     document.getElementById('bottom-sheet').classList.remove('open');
     document.getElementById('sheet-backdrop').classList.remove('open');
-    document.querySelectorAll('.nav-tab-btn').forEach((btn) => {
-      btn.classList.toggle('active', btn.dataset.sheet === 'none');
-    });
+    this.syncBottomNavActive();
   }
 
   renderActiveSheet() {
-    if (this.activeSheet === 'layers') this.renderLayersSheet();
+    if (this.activeSheet === 'layers') this.renderRightLayersDrawer();
     else if (this.activeSheet === 'adjustments') this.renderAdjustmentsSheet();
     else if (this.activeSheet === 'filters') this.renderFiltersSheet();
-    else if (this.activeSheet === 'project') this.renderProjectSheet();
+    else if (this.activeSheet === 'settings' || this.activeSheet === 'project') this.renderSettingsSheet();
   }
 
   renderLayersSheet() {
@@ -2817,7 +3352,11 @@ class ProStudioMobileApp {
 
     const list = document.createElement('div');
     list.className = 'layer-list';
+    this.populateLayerStackRows(list, doc);
+    body.appendChild(list);
+  }
 
+  populateLayerStackRows(list, doc) {
     for (let i = doc.layers.length - 1; i >= 0; i--) {
       const lyr = doc.layers[i];
       const isSelected = lyr.id === doc.activeLayerId;
@@ -2991,7 +3530,8 @@ class ProStudioMobileApp {
         expBtn.addEventListener('click', (e) => {
           e.stopPropagation();
           lyr.styles.effectsExpanded = lyr.styles.effectsExpanded === false;
-          this.renderLayersSheet();
+          if (this.rightLayersOpen) this.renderRightLayersDrawer();
+          else this.renderLayersSheet();
         });
 
         fxHeader.appendChild(masterEye);
@@ -3035,8 +3575,6 @@ class ProStudioMobileApp {
         list.appendChild(fxTree);
       }
     }
-
-    body.appendChild(list);
   }
 
   renderAdjustmentsSheet() {
@@ -3722,105 +4260,245 @@ class ProStudioMobileApp {
   }
 
   /* --------------------------------------------------------------------------
-   * 4. STORAGE PERMISSION, EXPORT LOCATION, PSD I/O & APK SHEET
+   * 4. SETTINGS & WORKSPACE CONFIGURATION TAB (Replaces Storage/PSD Tab!)
    * -------------------------------------------------------------------------- */
-  renderProjectSheet() {
+  renderSettingsSheet() {
     const doc = this.session.doc;
-    if (!doc) return;
+    const ws = this.workspaceSettings;
 
-    document.getElementById('sheet-title').textContent = 'Storage, PSD, Fonts & APK';
-    document.getElementById('sheet-subtitle').textContent = 'Configure storage permissions, export folder & files';
-    document.getElementById('sheet-header-actions').innerHTML = '';
+    document.getElementById('sheet-title').textContent = 'Settings & Workspace';
+    document.getElementById('sheet-subtitle').textContent = 'Toolbar layout, free move, visible tools & storage';
+
+    const headerActions = document.getElementById('sheet-header-actions');
+    headerActions.innerHTML = '';
+    const resetBtn = document.createElement('button');
+    resetBtn.type = 'button';
+    resetBtn.className = 'opt-chip';
+    resetBtn.textContent = 'Reset Layout';
+    resetBtn.addEventListener('click', () => {
+      this.workspaceSettings = this.getDefaultWorkspaceSettings();
+      this.saveWorkspaceSettings();
+      this.applyWorkspaceSettings();
+      this.renderSettingsSheet();
+      this.showToast('Workspace reset to default');
+    });
+    headerActions.appendChild(resetBtn);
 
     const body = document.getElementById('sheet-body');
     body.innerHTML = '';
 
-    // 1. Storage Permission & Export Folder Card
-    const storageCard = document.createElement('div');
-    storageCard.className = 'curves-histogram-card';
-    storageCard.innerHTML = `
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-        <div>
-          <strong style="font-size:12.5px;color:${this.storagePermissionGranted ? '#4ade80' : 'var(--pc-text)'};display:block;">
-            ${this.storagePermissionGranted ? '✓ Device Storage Permission Active' : '📁 Device Storage & Export Folder'}
-          </strong>
-          <span style="font-size:11px;color:var(--pc-text-dim);">
-            Target: ${EXPORT_LOCATIONS.find((l) => l.id === this.exportLocation)?.label || 'Downloads'}
-          </span>
-        </div>
-        <button type="button" class="pill-action-btn" id="sheet-btn-storage-cfg">
-          Configure Folder...
-        </button>
+    // ------------------------------------------------------------------------
+    // CARD 1: TOOLBAR POSITION & FREE-FLOAT MOVEMENT
+    // ------------------------------------------------------------------------
+    const tbCard = document.createElement('div');
+    tbCard.className = 'settings-section-card';
+    tbCard.innerHTML = `<div class="settings-section-title"><span>Toolbar Position &amp; Movement</span></div>`;
+
+    const posGrid = document.createElement('div');
+    posGrid.style.display = 'grid';
+    posGrid.style.gridTemplateColumns = '1fr 1fr';
+    posGrid.style.gap = '8px';
+
+    posGrid.innerHTML = `
+      <div class="ctrl-field">
+        <label>Toolbar Dock Location</label>
+        <select class="pc-select" id="set-tb-pos">
+          <option value="bottom" ${ws.toolbarPosition === 'bottom' ? 'selected' : ''}>Bottom Bar</option>
+          <option value="top" ${ws.toolbarPosition === 'top' ? 'selected' : ''}>Top Bar</option>
+          <option value="left" ${ws.toolbarPosition === 'left' ? 'selected' : ''}>Left Side (Photoshop)</option>
+          <option value="right" ${ws.toolbarPosition === 'right' ? 'selected' : ''}>Right Side</option>
+        </select>
+      </div>
+      <div class="ctrl-field">
+        <label>Side / Float Columns</label>
+        <select class="pc-select" id="set-tb-cols">
+          <option value="1" ${ws.toolbarCols === 1 ? 'selected' : ''}>1-Column Strip</option>
+          <option value="2" ${ws.toolbarCols === 2 ? 'selected' : ''}>2-Column (Photoshop)</option>
+        </select>
       </div>
     `;
-    storageCard.querySelector('#sheet-btn-storage-cfg').addEventListener('click', () => {
-      this.openStorageSettingsModal();
+    posGrid.querySelector('#set-tb-pos').addEventListener('change', (e) => {
+      ws.toolbarPosition = e.target.value;
+      ws.toolbarFreeFloat = false;
+      this.saveWorkspaceSettings();
+      this.applyWorkspaceSettings();
+      this.renderSettingsSheet();
+      this.showToast(`Toolbar moved to ${e.target.options[e.target.selectedIndex].text}`);
     });
-    body.appendChild(storageCard);
+    posGrid.querySelector('#set-tb-cols').addEventListener('change', (e) => {
+      ws.toolbarCols = Number(e.target.value);
+      this.saveWorkspaceSettings();
+      this.applyWorkspaceSettings();
+    });
+    tbCard.appendChild(posGrid);
 
-    // 2. File Import / Open / Font / Export Buttons
-    const ioRow = document.createElement('div');
-    ioRow.style.display = 'grid';
-    ioRow.style.gridTemplateColumns = '1fr 1fr';
-    ioRow.style.gap = '8px';
-
-    const btnOpen = document.createElement('button');
-    btnOpen.type = 'button';
-    btnOpen.className = 'pill-action-btn';
-    btnOpen.style.height = '38px';
-    btnOpen.style.justifyContent = 'center';
-    btnOpen.textContent = '📂 Open PSD / Photo';
-    btnOpen.addEventListener('click', () => document.getElementById('file-input-open').click());
-
-    const btnPlace = document.createElement('button');
-    btnPlace.type = 'button';
-    btnPlace.className = 'pill-action-btn secondary';
-    btnPlace.style.height = '38px';
-    btnPlace.style.justifyContent = 'center';
-    btnPlace.textContent = '🖼️ Place Photo as Layer';
-    btnPlace.addEventListener('click', () => document.getElementById('file-input-place-layer').click());
-
-    const btnImportFont = document.createElement('button');
-    btnImportFont.type = 'button';
-    btnImportFont.className = 'pill-action-btn secondary';
-    btnImportFont.style.height = '38px';
-    btnImportFont.style.justifyContent = 'center';
-    btnImportFont.textContent = '🔤 Import Font (.ttf/.otf)';
-    btnImportFont.addEventListener('click', () => document.getElementById('file-input-font').click());
-
-    const btnExport = document.createElement('button');
-    btnExport.type = 'button';
-    btnExport.className = 'pill-action-btn';
-    btnExport.style.height = '38px';
-    btnExport.style.justifyContent = 'center';
-    btnExport.textContent = '💾 Export & Choose Folder';
-    btnExport.addEventListener('click', () => this.openExportModal());
-
-    ioRow.appendChild(btnOpen);
-    ioRow.appendChild(btnPlace);
-    ioRow.appendChild(btnImportFont);
-    ioRow.appendChild(btnExport);
-    body.appendChild(ioRow);
-
-    // 3. Native Android APK Download Card
-    const apkCard = document.createElement('div');
-    apkCard.className = 'curves-histogram-card';
-    apkCard.style.background = 'rgba(35, 134, 54, 0.14)';
-    apkCard.style.borderColor = 'rgba(46, 160, 67, 0.45)';
-    apkCard.innerHTML = `
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
-        <div>
-          <strong style="font-size:13px;color:var(--pc-text);display:block;">Native Android App (.APK)</strong>
-          <span style="font-size:11px;color:var(--pc-text-dim);">Signed installable package with Storage Permission &amp; Folder Picker</span>
-        </div>
-        <a href="prostudio-mobile.apk" download="prostudio-mobile.apk" class="apk-download-btn" style="flex-shrink:0;">
-          Download APK
-        </a>
-      </div>
+    // Free-Float Move Toggle
+    const floatRow = document.createElement('label');
+    floatRow.className = 'settings-toggle-row';
+    floatRow.innerHTML = `
+      <span>
+        <strong>Move Toolbar Freely (Floating Mode)</strong>
+        <small>Detach the toolbar and drag it anywhere over the canvas</small>
+      </span>
+      <input type="checkbox" id="set-tb-freefloat" ${ws.toolbarFreeFloat ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--pc-accent);" />
     `;
-    body.appendChild(apkCard);
+    floatRow.querySelector('#set-tb-freefloat').addEventListener('change', (e) => {
+      ws.toolbarFreeFloat = e.target.checked;
+      this.saveWorkspaceSettings();
+      this.applyWorkspaceSettings();
+      this.showToast(ws.toolbarFreeFloat ? 'Toolbar is now free-floating — drag its top grip bar!' : 'Toolbar snapped back to dock');
+    });
+    tbCard.appendChild(floatRow);
 
-    // 4. Theme Dropdown & History Dropdown
+    const pillRow = document.createElement('label');
+    pillRow.className = 'settings-toggle-row';
+    pillRow.innerHTML = `
+      <span>
+        <strong>Show Floating Swatch &amp; Brush Pill</strong>
+        <small>Quick foreground/background colors &amp; brush size dropdown</small>
+      </span>
+      <input type="checkbox" id="set-show-pill" ${ws.showBrushPill !== false ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--pc-accent);" />
+    `;
+    pillRow.querySelector('#set-show-pill').addEventListener('change', (e) => {
+      ws.showBrushPill = e.target.checked;
+      this.saveWorkspaceSettings();
+      this.applyWorkspaceSettings();
+    });
+    tbCard.appendChild(pillRow);
+
+    body.appendChild(tbCard);
+
+    // ------------------------------------------------------------------------
+    // CARD 2: CUSTOMIZE TOOLBAR ITEMS (Configure what shows on the toolbar!)
+    // ------------------------------------------------------------------------
+    const custCard = document.createElement('div');
+    custCard.className = 'settings-section-card';
+
+    const custHead = document.createElement('div');
+    custHead.className = 'settings-section-title';
+    custHead.innerHTML = `<span>Customize Toolbar Tools</span>`;
+
+    const presetSel = document.createElement('select');
+    presetSel.className = 'opt-dropdown-select';
+    presetSel.style.height = '24px';
+    presetSel.style.fontSize = '10.5px';
+    presetSel.innerHTML = `
+      <option value="">Quick Preset ▾</option>
+      <option value="default">Default (6 Groups)</option>
+      <option value="full">All Groups + Quick Pins</option>
+      <option value="retouch">Photo Retouch Focus</option>
+      <option value="poster">Poster &amp; Typography</option>
+    `;
+    presetSel.addEventListener('change', () => {
+      const v = presetSel.value;
+      presetSel.value = '';
+      const next = {};
+      for (const it of TOOLBAR_CONFIG_ITEMS) next[it.id] = false;
+      if (v === 'default') {
+        ['paint', 'select', 'crop', 'text', 'move', 'fill'].forEach((k) => { next[k] = true; });
+      } else if (v === 'full') {
+        TOOLBAR_CONFIG_ITEMS.forEach((it) => { next[it.id] = true; });
+      } else if (v === 'retouch') {
+        ['paint', 'select', 'crop', 'pin_eraser', 'pin_subject', 'pin_eyedropper'].forEach((k) => { next[k] = true; });
+      } else if (v === 'poster') {
+        ['text', 'move', 'crop', 'fill', 'pin_fx', 'pin_perspCrop'].forEach((k) => { next[k] = true; });
+      } else {
+        return;
+      }
+      ws.visibleTools = next;
+      this.saveWorkspaceSettings();
+      this.applyWorkspaceSettings();
+      this.renderSettingsSheet();
+    });
+    custHead.appendChild(presetSel);
+    custCard.appendChild(custHead);
+
+    const toolGrid = document.createElement('div');
+    toolGrid.className = 'settings-tool-grid';
+
+    for (const item of TOOLBAR_CONFIG_ITEMS) {
+      const chip = document.createElement('label');
+      chip.className = 'settings-tool-chip';
+      const checked = ws.visibleTools?.[item.id] !== false;
+      chip.innerHTML = `
+        <input type="checkbox" data-cfg-tool="${item.id}" ${checked ? 'checked' : ''} />
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${item.label}</span>
+      `;
+      chip.querySelector('input').addEventListener('change', (e) => {
+        ws.visibleTools[item.id] = e.target.checked;
+        // Keep at least 1 tool visible so toolbar never vanishes
+        const anyOn = Object.values(ws.visibleTools).some(Boolean);
+        if (!anyOn) {
+          ws.visibleTools[item.id] = true;
+          e.target.checked = true;
+          this.showToast('Keep at least 1 tool visible on toolbar');
+          return;
+        }
+        this.saveWorkspaceSettings();
+        this.applyWorkspaceSettings();
+      });
+      toolGrid.appendChild(chip);
+    }
+    custCard.appendChild(toolGrid);
+    body.appendChild(custCard);
+
+    // ------------------------------------------------------------------------
+    // CARD 3: STARTUP CANVAS SELECTOR, RIGHT LAYERS & THEME
+    // ------------------------------------------------------------------------
+    const wsCard = document.createElement('div');
+    wsCard.className = 'settings-section-card';
+    wsCard.innerHTML = `<div class="settings-section-title"><span>Startup &amp; Workspace Panels</span></div>`;
+
+    const startRow = document.createElement('label');
+    startRow.className = 'settings-toggle-row';
+    startRow.innerHTML = `
+      <span>
+        <strong>Start on New Document Canvas Selector</strong>
+        <small>Open Photoshop-style document presets when launching</small>
+      </span>
+      <input type="checkbox" id="set-start-newdoc" ${ws.showNewDocOnStart !== false ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--pc-accent);" />
+    `;
+    startRow.querySelector('#set-start-newdoc').addEventListener('change', (e) => {
+      ws.showNewDocOnStart = e.target.checked;
+      this.saveWorkspaceSettings();
+    });
+    wsCard.appendChild(startRow);
+
+    const hudRow = document.createElement('label');
+    hudRow.className = 'settings-toggle-row';
+    hudRow.innerHTML = `
+      <span>
+        <strong>Show Top Canvas HUD Badges</strong>
+        <small>Active layer chip, save folder indicator &amp; zoom badge</small>
+      </span>
+      <input type="checkbox" id="set-show-hud" ${ws.showHudBadges !== false ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--pc-accent);" />
+    `;
+    hudRow.querySelector('#set-show-hud').addEventListener('change', (e) => {
+      ws.showHudBadges = e.target.checked;
+      this.saveWorkspaceSettings();
+      this.applyWorkspaceSettings();
+    });
+    wsCard.appendChild(hudRow);
+
+    const quickPanelBtns = document.createElement('div');
+    quickPanelBtns.style.display = 'grid';
+    quickPanelBtns.style.gridTemplateColumns = '1fr 1fr';
+    quickPanelBtns.style.gap = '6px';
+    quickPanelBtns.innerHTML = `
+      <button type="button" class="pill-action-btn secondary" id="set-open-newdoc-now" style="height:32px;justify-content:center;">📄 New Document Screen</button>
+      <button type="button" class="pill-action-btn secondary" id="set-toggle-rlayers" style="height:32px;justify-content:center;">◫ Toggle Right Layers</button>
+    `;
+    quickPanelBtns.querySelector('#set-open-newdoc-now').addEventListener('click', () => {
+      this.closeSheet();
+      this.newDocScreen.open(true);
+    });
+    quickPanelBtns.querySelector('#set-toggle-rlayers').addEventListener('click', () => {
+      this.closeSheet();
+      this.setRightLayersOpen(true);
+    });
+    wsCard.appendChild(quickPanelBtns);
+
+    // Theme & History selectors
     const row2 = document.createElement('div');
     row2.style.display = 'grid';
     row2.style.gridTemplateColumns = '1fr 1fr';
@@ -3851,27 +4529,60 @@ class ProStudioMobileApp {
     thField.appendChild(thSel);
     row2.appendChild(thField);
 
-    const histField = document.createElement('div');
-    histField.className = 'ctrl-field';
-    histField.innerHTML = `<label>History State (${doc.history.length})</label>`;
-    const histSel = document.createElement('select');
-    histSel.className = 'pc-select';
-    for (let i = doc.history.length - 1; i >= 0; i--) {
-      const h = doc.history[i];
-      const o = document.createElement('option');
-      o.value = String(i);
-      o.textContent = `#${i + 1}: ${h.label}`;
-      if (i === doc.historyIndex) o.selected = true;
-      histSel.appendChild(o);
+    if (doc) {
+      const histField = document.createElement('div');
+      histField.className = 'ctrl-field';
+      histField.innerHTML = `<label>History State (${doc.history.length})</label>`;
+      const histSel = document.createElement('select');
+      histSel.className = 'pc-select';
+      for (let i = doc.history.length - 1; i >= 0; i--) {
+        const h = doc.history[i];
+        const o = document.createElement('option');
+        o.value = String(i);
+        o.textContent = `#${i + 1}: ${h.label}`;
+        if (i === doc.historyIndex) o.selected = true;
+        histSel.appendChild(o);
+      }
+      histSel.addEventListener('change', () => {
+        doc.restoreSnapshot(Number(histSel.value));
+        this.session.notify('history.jump');
+      });
+      histField.appendChild(histSel);
+      row2.appendChild(histField);
     }
-    histSel.addEventListener('change', () => {
-      doc.restoreSnapshot(Number(histSel.value));
-      this.session.notify('history.jump');
-    });
-    histField.appendChild(histSel);
-    row2.appendChild(histField);
+    wsCard.appendChild(row2);
+    body.appendChild(wsCard);
 
-    body.appendChild(row2);
+    // ------------------------------------------------------------------------
+    // CARD 4: STORAGE PERMISSION, EXPORT LOCATION, FONTS & APK
+    // ------------------------------------------------------------------------
+    const stCard = document.createElement('div');
+    stCard.className = 'settings-section-card';
+    stCard.innerHTML = `
+      <div class="settings-section-title">
+        <span>Storage Permission, Export &amp; Files</span>
+        <span style="color:${this.storagePermissionGranted ? '#4ade80' : '#f59e0b'};font-size:10px;">
+          ${this.storagePermissionGranted ? '● Granted' : '● Configure'}
+        </span>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+        <span style="font-size:11px;color:var(--pc-text-dim);">
+          Save Folder: <strong style="color:var(--pc-text);">${EXPORT_LOCATIONS.find((l) => l.id === this.exportLocation)?.label || 'Downloads'}</strong>
+        </span>
+        <button type="button" class="pill-action-btn" id="sheet-btn-storage-cfg">Storage &amp; Folder...</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+        <button type="button" class="pill-action-btn secondary" id="set-open-psd" style="height:32px;justify-content:center;">📂 Open PSD / Photo</button>
+        <button type="button" class="pill-action-btn secondary" id="set-import-font" style="height:32px;justify-content:center;">🔤 Import Font (.ttf)</button>
+        <button type="button" class="pill-action-btn" id="set-export-btn" style="height:32px;justify-content:center;">💾 Export / Save As</button>
+        <a href="prostudio-mobile.apk" download="prostudio-mobile.apk" class="apk-download-btn" style="height:32px;justify-content:center;">⬇ Download APK</a>
+      </div>
+    `;
+    stCard.querySelector('#sheet-btn-storage-cfg').addEventListener('click', () => this.openStorageSettingsModal());
+    stCard.querySelector('#set-open-psd').addEventListener('click', () => document.getElementById('file-input-open').click());
+    stCard.querySelector('#set-import-font').addEventListener('click', () => document.getElementById('file-input-font').click());
+    stCard.querySelector('#set-export-btn').addEventListener('click', () => this.openExportModal());
+    body.appendChild(stCard);
   }
 
   appendRangeRow(container, label, min, max, step, value, unit, onChange) {
@@ -4405,6 +5116,7 @@ class ProStudioMobileApp {
         doc.compose();
         doc.pushHistory(`Open ${file.name}`);
         this.loadDocument(doc);
+        this.newDocScreen?.close();
         this.closeSheet();
         this.showToast(`Opened PSD (${doc.layers.length} layers)`);
         return;
@@ -4419,6 +5131,7 @@ class ProStudioMobileApp {
       doc.compose();
       doc.pushHistory(`Open ${file.name}`);
       this.loadDocument(doc);
+      this.newDocScreen?.close();
       this.closeSheet();
       this.showToast(`Opened ${file.name} (${bmp.width}×${bmp.height})`);
     } catch (err) {

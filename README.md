@@ -19,27 +19,28 @@
   - **Target Device Folders**: Choose **Downloads** (`/storage/emulated/0/Download`), **Pictures** (`/storage/emulated/0/Pictures`), **DCIM / Camera** (`/storage/emulated/0/DCIM`), or **Documents** (`/storage/emulated/0/Documents`).
   - **Custom Subfolder & Filename**: Configure a custom subfolder (e.g. `ProStudio`) and file name directly in the Storage & Export dialog.
 
-### 3. Compact Dropdown Menus (No Horizontal Sliding Bars)
-- **Top Header Dropdowns**:
-  - **`File ▾`**: New Document, Open Photo / PSD, Load Studio Presets, Storage & Export Location, Quick Save `.PSD` / `.PNG` / `.JPG`, and Download Android `.APK`.
-  - **`✨ Select ▾`**: One-tap **AI Select ➔ Subject**, All, Deselect, Invert, Feather, Expand, Contract, and Color Range.
-  - **`fx ▾`**: Quick jump to Blending Options & 10 Layer Styles.
-- **Left Floating `Brush ▾` Popover**: Replaces tall vertical on-canvas slider bars with a compact dropdown popover for Brush Size, Hardness, Opacity, Flow, and Color Swatches.
-- **6-Group Bottom Tool Bar with Upward Flyout Dropdowns (`▴`)**: All 18 studio tools fit across 6 grouped buttons without horizontal scrolling. Tap an active group to open its upward dropdown flyout.
+### 3. Customizable Photoshop Workspace, Settings Tab & Startup Canvas Selector
+- **Photoshop-Style "New Document" Start Screen**: Launches directly into document canvas selection (`Recent`, `Saved`, `Photo`, `Print`, `Art & Illustration`, `Web`, `Mobile`, `Film & Video`) with Preset Details (`Width`/`Height` in `px`/`in`/`cm`/`mm`/`pt`, Portrait/Landscape orientation, Resolution, Color Mode, Bit Depth, Background Contents, and Save Custom Preset).
+- **Dedicated `Settings` Tab (Replaces `Storage/PSD`)**:
+  - **Toolbar Dock Location**: Switch instantly between **Bottom**, **Top**, **Left Side (Photoshop)**, and **Right Side** (with 1-column or 2-column vertical layouts).
+  - **Move Toolbar Freely Toggle**: Detach the toolbar and drag it freely anywhere over the canvas via its top grip bar (`⋮⋮`), with automatic smart left/right flyout menus.
+  - **Customize Toolbar Items**: Show or hide individual tool groups and pin direct quick-access buttons (`Eraser`, `Select Subject`, `Perspective Crop`, `Eyedropper`, `Hand`, `Layer Style fx`) or apply one-tap workspace presets.
+  - **Storage & Export Controls**: Integrated Storage Permission request, default export folder selector, theme switcher, and history jumper.
+- **Right-Side Docked Layers Panel with Toggle Hide/Show Side Arrow (`«` / `»`)**:
+  - Slide out Photoshop's right-side **Layers** & **Swatches** panel anytime via the right edge toggle arrow or bottom `Layers` tab, complete with expandable `Effects` sub-trees and the bottom quick-action icon bar (`fx`, `Mask`, `Adj`, `Dup`, `+New`, `Delete`).
+- **Top Header Dropdowns**: `File ▾`, `✨ Select ▾`, `fx ▾`, and left `Brush ▾` popover dropdowns.
 
-### 4. Complete Studio Toolset
+### 4. Complete Studio Toolset & Photoshop-Exact Layer Style (`fx`)
 - **Crop & Slice Suite**:
-  - **Crop Tool (`C`)**: Rule-of-thirds grid, 8 handles, aspect ratio presets (`Free`, `1:1`, `4:5`, `16:9`, `9:16`, `4:3`, `3:2`), Straighten angle, and Rotate 90° CW/CCW.
-  - **Perspective Crop Tool**: Interactive 4-corner homography mesh (`TL`, `TR`, `BR`, `BL`) that rectifies keystone-distorted photos into a flat rectangle via inverse bilinear/homography warping.
-  - **Slice Tool & Slice Select Tool**: Drag user slices with auto-numbered badges, edit slice Name/URL/Target/Dimensions, and batch-export slices.
+  - **Crop Tool (`C`)**: Rule-of-thirds grid, 8 handles, aspect ratio presets, Straighten angle, and Rotate 90° CW/CCW.
+  - **Perspective Crop Tool**: Interactive 4-corner homography mesh (`TL`, `TR`, `BR`, `BL`) for keystone rectification.
+  - **Slice Tool & Slice Select Tool**: Drag user slices with auto-numbered badges, divide slices, and batch-export slices.
 - **Type Tool (`T`) & Custom Font Importer**:
-  - Upload downloaded `.ttf`, `.otf`, `.woff`, and `.woff2` font files at runtime via the `FontFace` API and persist them in `localStorage`.
-  - Live non-destructive text editing with font size, tracking, line height, weight, italic, alignment, and optional text stroke.
-- **Blending Options & 10 Layer Styles (`fx`)**:
-  - **General Blending**: 17 Blend Modes, Opacity, **Fill Opacity** (independently fades layer pixels while keeping layer styles at full strength), **R/G/B Channel Toggles**, and **Blend If** luminance ramps.
-  - **10 Layer Styles**: Drop Shadow, Inner Shadow, Outer Glow, Inner Glow, Bevel & Emboss, Satin, Color Overlay, Gradient Overlay, Pattern Overlay, and Stroke (`Outside`, `Inside`, `Center`).
+  - Import downloaded `.ttf`, `.otf`, `.woff`, and `.woff2` fonts at runtime via the `FontFace` API.
+- **100% Photoshop-Exact Layer Style (`fx`) Dialog**:
+  - All 14 sections (`Styles`, `Blending Options`, `Bevel & Emboss` ➔ `Contour` & `Texture`, stackable `+` `Stroke`, `Inner Shadow`, `Color Overlay`, `Gradient Overlay`, `Drop Shadow`, plus `Inner Glow`, `Satin`, `Pattern Overlay`, `Outer Glow`), 27 Blend Modes, 12 Contour Curves, Global Light, Blend If (`This Layer` & `Underlying Layer` with Split handles), Live Preview box, `[✓] Preview`, `OK`/`Cancel` rollback, `New Style...`, and `Make Default`/`Reset to Default`.
 - **AI Select ➔ Subject**:
-  - Multi-cue foreground saliency segmentation combining corner/border background color modeling, center spatial prior, and Sobel edge density closure.
+  - Multi-cue foreground saliency segmentation.
 
 ---
 

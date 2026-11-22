@@ -102,8 +102,8 @@
         </div>
 
         <!-- Top Floating Canvas HUD -->
-        <div class="canvas-hud-top">
-          <div class="hud-badge hud-layer-chip" id="hud-active-layer" title="Tap to open Layers Sheet">
+        <div class="canvas-hud-top" id="canvas-hud-top">
+          <div class="hud-badge hud-layer-chip" id="hud-active-layer" title="Tap to toggle Right Layers Panel">
             <span id="hud-layer-dot" style="width:7px;height:7px;border-radius:50%;background:#378ef0;display:inline-block;"></span>
             <span id="hud-layer-name">Cobalt Ocean Wave</span>
           </div>
@@ -117,7 +117,7 @@
           </div>
         </div>
 
-        <!-- Compact Floating Left Swatch & Brush Settings Dropdown Trigger (No vertical sliders blocking canvas) -->
+        <!-- Compact Floating Left Swatch & Brush Settings Dropdown Trigger -->
         <aside class="floating-brush-pill" id="floating-brush-pill">
           <div class="quick-swatch-stack" id="btn-color-picker" title="Tap to open Color Picker &amp; Swatches">
             <div class="swatch-fg" id="quick-swatch-fg" style="background:#378ef0;"></div>
@@ -142,93 +142,161 @@
 
         <!-- Floating Contextual Action Bar (Selection / Crop / Perspective Crop / Slice) -->
         <div class="floating-context-bar" id="floating-context-bar" hidden></div>
+
+        <!-- Photoshop-Style Right-Side Docked Layers Panel with Toggle Hide/Show Side Arrow! -->
+        <aside class="right-layers-drawer" id="right-layers-drawer" aria-label="Right Layers Panel">
+          <button type="button" class="right-drawer-toggle-tab" id="btn-toggle-right-layers" title="Show / Hide Layers Panel">
+            <span class="drawer-arrow" id="right-layers-arrow">«</span>
+            <span class="drawer-tab-lbl">Layers</span>
+          </button>
+          <div class="right-drawer-panel" id="right-drawer-panel">
+            <div class="right-drawer-head">
+              <div class="right-drawer-tabs">
+                <button type="button" class="rd-tab active" data-rdtab="layers" id="rd-tab-layers">Layers</button>
+                <button type="button" class="rd-tab" data-rdtab="swatches" id="rd-tab-swatches">Swatches</button>
+              </div>
+              <div class="right-drawer-head-actions" id="right-drawer-head-actions">
+                <button type="button" class="ps-fx-mini-btn" id="btn-close-right-layers" title="Hide Layers Panel">»</button>
+              </div>
+            </div>
+            <div class="right-drawer-body" id="right-drawer-body"></div>
+            <div class="right-drawer-footer" id="right-drawer-footer"></div>
+          </div>
+        </aside>
       </section>
 
       <!-- Dynamic Tool Options Bar (Uses Dropdown Selects instead of horizontal sliding!) -->
       <div class="tool-options-strip" id="tool-options-strip"></div>
 
-      <!-- Grouped 6-Column Tool Bar with Upward Flyout Dropdowns (▴) — Zero Horizontal Scrolling! -->
+      <!-- Configurable, Dockable (Bottom / Top / Side Left / Side Right) & Free-Floating Toolbar! -->
       <nav class="tools-Belt" id="tools-belt" aria-label="Editing Tool Groups">
-        <!-- Group 1: Paint & Retouch Flyout -->
-        <div class="tool-group-wrapper">
-          <button type="button" class="tool-item-btn active" data-group="paint" id="tool-group-paint">
-            <span class="flyout-caret">▴</span>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/></svg>
-            <span id="lbl-group-paint">Brush</span>
-          </button>
-          <div class="dropdown-popover up-left" id="flyout-paint" hidden></div>
+        <!-- Photoshop-Style Drag Handle & 1-Col/2-Col Toggle (shown in Side & Free-Float modes) -->
+        <div class="toolbar-float-handle" id="toolbar-float-handle" title="Drag to move toolbar freely">
+          <button type="button" class="tb-handle-btn" id="btn-toolbar-cols" title="Toggle 1-Column / 2-Column">«»</button>
+          <span class="tb-grip-dots">⋮⋮</span>
+          <button type="button" class="tb-handle-btn" id="btn-toolbar-dock-toggle" title="Toggle Free Float / Dock">📌</button>
         </div>
 
-        <!-- Group 2: Select & Subject Flyout -->
-        <div class="tool-group-wrapper">
-          <button type="button" class="tool-item-btn" data-group="select" id="tool-group-select">
-            <span class="flyout-caret">▴</span>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="4 3"/></svg>
-            <span id="lbl-group-select">Select</span>
-          </button>
-          <div class="dropdown-popover up-left" id="flyout-select" hidden></div>
-        </div>
+        <div class="tools-belt-items" id="tools-belt-items">
+          <!-- Group 1: Paint & Retouch Flyout -->
+          <div class="tool-group-wrapper" data-tool-item="paint">
+            <button type="button" class="tool-item-btn active" data-group="paint" id="tool-group-paint">
+              <span class="flyout-caret">▴</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/></svg>
+              <span id="lbl-group-paint">Brush</span>
+            </button>
+            <div class="dropdown-popover up-left" id="flyout-paint" hidden></div>
+          </div>
 
-        <!-- Group 3: Crop, Perspective Crop & Slice Flyout -->
-        <div class="tool-group-wrapper">
-          <button type="button" class="tool-item-btn" data-group="crop" id="tool-group-crop">
-            <span class="flyout-caret">▴</span>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>
-            <span id="lbl-group-crop">Crop/Slice</span>
-          </button>
-          <div class="dropdown-popover up-center" id="flyout-crop" hidden></div>
-        </div>
+          <!-- Group 2: Select & Subject Flyout -->
+          <div class="tool-group-wrapper" data-tool-item="select">
+            <button type="button" class="tool-item-btn" data-group="select" id="tool-group-select">
+              <span class="flyout-caret">▴</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="4 3"/></svg>
+              <span id="lbl-group-select">Select</span>
+            </button>
+            <div class="dropdown-popover up-left" id="flyout-select" hidden></div>
+          </div>
 
-        <!-- Group 4: Type & Custom Fonts Flyout -->
-        <div class="tool-group-wrapper">
-          <button type="button" class="tool-item-btn" data-group="text" id="tool-group-text">
-            <span class="flyout-caret">▴</span>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
-            <span id="lbl-group-text">Type/Font</span>
-          </button>
-          <div class="dropdown-popover up-center" id="flyout-text" hidden></div>
-        </div>
+          <!-- Group 3: Crop, Perspective Crop & Slice Flyout -->
+          <div class="tool-group-wrapper" data-tool-item="crop">
+            <button type="button" class="tool-item-btn" data-group="crop" id="tool-group-crop">
+              <span class="flyout-caret">▴</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>
+              <span id="lbl-group-crop">Crop/Slice</span>
+            </button>
+            <div class="dropdown-popover up-center" id="flyout-crop" hidden></div>
+          </div>
 
-        <!-- Group 5: Transform & Move Flyout -->
-        <div class="tool-group-wrapper">
-          <button type="button" class="tool-item-btn" data-group="move" id="tool-group-move">
-            <span class="flyout-caret">▴</span>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
-            <span id="lbl-group-move">Transform</span>
-          </button>
-          <div class="dropdown-popover up-right" id="flyout-move" hidden></div>
-        </div>
+          <!-- Group 4: Type & Custom Fonts Flyout -->
+          <div class="tool-group-wrapper" data-tool-item="text">
+            <button type="button" class="tool-item-btn" data-group="text" id="tool-group-text">
+              <span class="flyout-caret">▴</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+              <span id="lbl-group-text">Type/Font</span>
+            </button>
+            <div class="dropdown-popover up-center" id="flyout-text" hidden></div>
+          </div>
 
-        <!-- Group 6: Fill, Gradient, Shapes & View Flyout -->
-        <div class="tool-group-wrapper">
-          <button type="button" class="tool-item-btn" data-group="fill" id="tool-group-fill">
-            <span class="flyout-caret">▴</span>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="11" height="11" rx="2"/><circle cx="16" cy="16" r="5"/></svg>
-            <span id="lbl-group-fill">Fill/Shape</span>
-          </button>
-          <div class="dropdown-popover up-right" id="flyout-fill" hidden></div>
+          <!-- Group 5: Transform & Move Flyout -->
+          <div class="tool-group-wrapper" data-tool-item="move">
+            <button type="button" class="tool-item-btn" data-group="move" id="tool-group-move">
+              <span class="flyout-caret">▴</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
+              <span id="lbl-group-move">Transform</span>
+            </button>
+            <div class="dropdown-popover up-right" id="flyout-move" hidden></div>
+          </div>
+
+          <!-- Group 6: Fill, Gradient, Shapes & View Flyout -->
+          <div class="tool-group-wrapper" data-tool-item="fill">
+            <button type="button" class="tool-item-btn" data-group="fill" id="tool-group-fill">
+              <span class="flyout-caret">▴</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="11" height="11" rx="2"/><circle cx="16" cy="16" r="5"/></svg>
+              <span id="lbl-group-fill">Fill/Shape</span>
+            </button>
+            <div class="dropdown-popover up-right" id="flyout-fill" hidden></div>
+          </div>
+
+          <!-- Optional User-Configurable Quick-Pin Direct Tool Buttons (toggled via Settings tab!) -->
+          <div class="tool-group-wrapper" data-tool-item="pin_eraser" hidden>
+            <button type="button" class="tool-item-btn" data-pin-tool="eraser" id="tool-pin-eraser" title="Eraser Tool (E)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>
+              <span>Eraser</span>
+            </button>
+          </div>
+          <div class="tool-group-wrapper" data-tool-item="pin_subject" hidden>
+            <button type="button" class="tool-item-btn" data-pin-action="subject" id="tool-pin-subject" title="AI Select Subject">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m12 3 1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2Z"/></svg>
+              <span>Subject</span>
+            </button>
+          </div>
+          <div class="tool-group-wrapper" data-tool-item="pin_perspCrop" hidden>
+            <button type="button" class="tool-item-btn" data-pin-tool="perspectiveCrop" id="tool-pin-perspcrop" title="Perspective Crop Tool">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polygon points="4 6 20 3 22 20 2 18"/></svg>
+              <span>Persp</span>
+            </button>
+          </div>
+          <div class="tool-group-wrapper" data-tool-item="pin_eyedropper" hidden>
+            <button type="button" class="tool-item-btn" data-pin-tool="eyedropper" id="tool-pin-eyedropper" title="Eyedropper Tool (I)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3Z"/></svg>
+              <span>Picker</span>
+            </button>
+          </div>
+          <div class="tool-group-wrapper" data-tool-item="pin_hand" hidden>
+            <button type="button" class="tool-item-btn" data-pin-tool="hand" id="tool-pin-hand" title="Hand Pan Tool (H)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M18 11V6a2 2 0 0 0-4 0"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>
+              <span>Hand</span>
+            </button>
+          </div>
+          <div class="tool-group-wrapper" data-tool-item="pin_fx" hidden>
+            <button type="button" class="tool-item-btn" data-pin-action="fx" id="tool-pin-fx" title="Layer Style (fx)">
+              <span style="font-style:italic;font-weight:800;font-size:15px;line-height:1;">fx</span>
+              <span>Styles</span>
+            </button>
+          </div>
         </div>
       </nav>
 
       <!-- Sheet Scrim Backdrop -->
       <div class="sheet-backdrop" id="sheet-backdrop"></div>
 
-      <!-- Mobile Panel Sheet Container -->
+      <!-- Mobile Panel Sheet Container (Adjust / Filters / Settings) -->
       <section class="bottom-sheet" id="bottom-sheet" aria-live="polite">
         <div class="sheet-handle-bar" id="sheet-close-handle">
           <div class="sheet-handle-pill"></div>
         </div>
         <div class="sheet-header">
           <div class="sheet-title-group">
-            <h2 class="sheet-title" id="sheet-title">Layers</h2>
-            <span class="sheet-subtitle" id="sheet-subtitle">Non-destructive stack</span>
+            <h2 class="sheet-title" id="sheet-title">Settings</h2>
+            <span class="sheet-subtitle" id="sheet-subtitle">Workspace &amp; Toolbar</span>
           </div>
           <div class="sheet-header-actions" id="sheet-header-actions"></div>
         </div>
         <div class="sheet-body" id="sheet-body"></div>
       </section>
 
-      <!-- 5-Tab Bottom Navigation Dock -->
+      <!-- 5-Tab Bottom Navigation Dock (Settings replaces Storage/PSD!) -->
       <footer class="bottom-nav-dock" role="tablist" aria-label="Workspace Panels">
         <button type="button" class="nav-tab-btn active" data-sheet="none" id="nav-btn-canvas">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
@@ -247,11 +315,14 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
           <span>Filters</span>
         </button>
-        <button type="button" class="nav-tab-btn" data-sheet="project" id="nav-btn-project">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-          <span>Storage/PSD</span>
+        <button type="button" class="nav-tab-btn" data-sheet="settings" id="nav-btn-settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+          <span>Settings</span>
         </button>
       </footer>
+
+      <!-- Photoshop-Style New Document Canvas Selection Start Screen -->
+      <div class="new-doc-overlay" id="new-doc-overlay" hidden></div>
 
       <!-- Modal Dialog Overlay -->
       <div class="modal-overlay" id="modal-overlay" hidden>

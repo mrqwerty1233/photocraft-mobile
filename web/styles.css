@@ -826,26 +826,229 @@ html, body {
 }
 
 /* ============================================================================
- * Grouped Tool Bar with Flyout Dropdowns (▴) — Zero Horizontal Scrolling!
+ * Configurable Tool Bar (Bottom / Top / Side Left / Side Right / Free-Float!)
  * ============================================================================ */
+.top-bar {
+  order: 1;
+}
+
+.canvas-workspace {
+  order: 3;
+}
+
+.tool-options-strip {
+  order: 4;
+}
+
 .tools-Belt {
+  order: 5;
   position: relative;
-  height: 52px;
-  min-height: 52px;
   background: var(--pc-chrome);
   border-top: 1px solid var(--pc-separator);
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  align-items: center;
-  padding: 0 4px;
-  gap: 3px;
+  padding: 4px;
   z-index: 66;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.toolbar-float-handle {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2px;
+  padding: 3px 4px;
+  background: #1d1e22;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 7px 7px 0 0;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.toolbar-float-handle:active {
+  cursor: grabbing;
+}
+
+.tb-grip-dots {
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--pc-text-dim);
+  line-height: 1;
+}
+
+.tb-handle-btn {
+  width: 19px;
+  height: 17px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #2b2d34;
+  color: #d6d9e0;
+  font-size: 9px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.tb-handle-btn:hover,
+.tb-handle-btn.active {
+  background: var(--pc-accent);
+  border-color: var(--pc-accent);
+  color: #ffffff;
+}
+
+.tools-belt-items {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
 }
 
 .tool-group-wrapper {
   position: relative;
+  flex: 1 1 0;
+  min-width: 44px;
   display: flex;
   justify-content: center;
+}
+
+.tool-group-wrapper[hidden] {
+  display: none !important;
+}
+
+/* Position: TOP */
+.tools-Belt.tb-pos-top {
+  order: 2;
+  border-top: none;
+  border-bottom: 1px solid var(--pc-separator);
+}
+
+.tools-Belt.tb-pos-top .flyout-caret {
+  transform: rotate(180deg);
+}
+
+/* Position: SIDE LEFT, SIDE RIGHT, or FREE-FLOAT */
+.tools-Belt.tb-pos-left,
+.tools-Belt.tb-pos-right,
+.tools-Belt.tb-free-float {
+  position: absolute;
+  order: initial;
+  padding: 0 0 4px 0;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 9px;
+  background: rgba(33, 35, 40, 0.94);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+  z-index: 44;
+  max-height: calc(100% - 190px);
+}
+
+.tools-Belt.tb-pos-left {
+  left: 6px;
+  top: 98px;
+}
+
+.tools-Belt.tb-pos-right {
+  right: 28px;
+  top: 98px;
+}
+
+.tools-Belt.tb-free-float {
+  z-index: 54;
+  border-color: rgba(55, 142, 240, 0.65);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.68), 0 0 0 1px rgba(55, 142, 240, 0.25);
+}
+
+.tools-Belt.tb-pos-left .toolbar-float-handle,
+.tools-Belt.tb-pos-right .toolbar-float-handle,
+.tools-Belt.tb-free-float .toolbar-float-handle {
+  display: flex;
+}
+
+.tools-Belt.tb-pos-left .tools-belt-items,
+.tools-Belt.tb-pos-right .tools-belt-items,
+.tools-Belt.tb-free-float .tools-belt-items {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 3px;
+  padding: 4px;
+  width: 50px;
+  overflow-y: visible;
+}
+
+.tools-Belt.tb-cols-2.tb-pos-left .tools-belt-items,
+.tools-Belt.tb-cols-2.tb-pos-right .tools-belt-items,
+.tools-Belt.tb-cols-2.tb-free-float .tools-belt-items {
+  grid-template-columns: repeat(2, 1fr);
+  width: 92px;
+}
+
+.tools-Belt.tb-pos-left .tool-group-wrapper,
+.tools-Belt.tb-pos-right .tool-group-wrapper,
+.tools-Belt.tb-free-float .tool-group-wrapper {
+  min-width: 0;
+}
+
+.tools-Belt.tb-pos-left .tool-item-btn,
+.tools-Belt.tb-pos-right .tool-item-btn,
+.tools-Belt.tb-free-float .tool-item-btn {
+  height: 36px;
+  padding: 2px;
+}
+
+.tools-Belt.tb-pos-left .tool-item-btn span:not(.flyout-caret),
+.tools-Belt.tb-pos-right .tool-item-btn span:not(.flyout-caret),
+.tools-Belt.tb-free-float .tool-item-btn span:not(.flyout-caret) {
+  font-size: 8px;
+}
+
+.tools-Belt.tb-pos-left .flyout-caret,
+.tools-Belt.tb-free-float .flyout-caret {
+  transform: rotate(90deg);
+}
+
+.tools-Belt.tb-pos-right .flyout-caret {
+  transform: rotate(-90deg);
+}
+
+/* Flyout popover direction overrides for Top / Side Left / Side Right */
+.tools-Belt.tb-pos-top .dropdown-popover {
+  bottom: auto;
+  top: calc(100% + 6px);
+}
+
+.tools-Belt.tb-pos-left .dropdown-popover {
+  bottom: auto;
+  top: 0;
+  left: calc(100% + 8px);
+  right: auto;
+  transform: none;
+}
+
+.tools-Belt.tb-pos-right .dropdown-popover {
+  bottom: auto;
+  top: 0;
+  right: calc(100% + 8px);
+  left: auto;
+  transform: none;
+}
+
+.tools-Belt.tb-free-float .dropdown-popover.float-open-right {
+  bottom: auto;
+  top: 0;
+  left: calc(100% + 8px);
+  right: auto;
+  transform: none;
+}
+
+.tools-Belt.tb-free-float .dropdown-popover.float-open-left {
+  bottom: auto;
+  top: 0;
+  right: calc(100% + 8px);
+  left: auto;
+  transform: none;
 }
 
 .tool-item-btn {
@@ -897,6 +1100,10 @@ html, body {
   font-size: 7.5px;
   opacity: 0.7;
   line-height: 1;
+}
+
+.bottom-nav-dock {
+  order: 6;
 }
 
 /* ============================================================================
@@ -2260,4 +2467,665 @@ html, body {
 .layer-fx-item-btn:hover {
   background: rgba(255, 255, 255, 0.08);
   color: #ffffff;
+}
+
+/* ============================================================================
+ * Photoshop-Style Right-Side Docked Layers Drawer with Hide/Show Side Arrow
+ * ============================================================================ */
+.right-layers-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 46;
+  pointer-events: none;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+}
+
+.right-drawer-toggle-tab {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  width: 24px;
+  padding: 12px 3px;
+  border-radius: 10px 0 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-right: none;
+  background: rgba(34, 36, 42, 0.94);
+  backdrop-filter: blur(8px);
+  color: #e5e7eb;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: -4px 4px 16px rgba(0, 0, 0, 0.45);
+  transition: right 0.22s cubic-bezier(0.22, 1, 0.36, 1), background 0.14s;
+  z-index: 2;
+}
+
+.right-drawer-toggle-tab:hover {
+  background: var(--pc-accent);
+  color: #ffffff;
+}
+
+.right-layers-drawer.open .right-drawer-toggle-tab {
+  right: min(268px, 76vw);
+  background: #282a30;
+}
+
+.drawer-arrow {
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  color: #60a5fa;
+}
+
+.right-drawer-toggle-tab:hover .drawer-arrow {
+  color: #ffffff;
+}
+
+.drawer-tab-lbl {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.right-drawer-panel {
+  width: min(268px, 76vw);
+  height: 100%;
+  background: rgba(34, 35, 39, 0.97);
+  backdrop-filter: blur(12px);
+  border-left: 1px solid #444750;
+  box-shadow: -10px 0 32px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  pointer-events: none;
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+  overflow: hidden;
+}
+
+.right-layers-drawer.open .right-drawer-panel {
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+.right-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  background: #232428;
+  border-bottom: 1px solid #3c3e46;
+  flex-shrink: 0;
+}
+
+.right-drawer-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.rd-tab {
+  padding: 4px 9px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #9ca3af;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.rd-tab.active {
+  background: #353740;
+  border-color: #4d515e;
+  color: #ffffff;
+}
+
+.right-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.right-drawer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  background: #1f2024;
+  border-top: 1px solid #3a3c43;
+  flex-shrink: 0;
+  gap: 4px;
+}
+
+.rd-icon-btn {
+  flex: 1;
+  height: 28px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  background: #2a2c32;
+  color: #d6d9e0;
+  font-size: 11.5px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.rd-icon-btn:hover {
+  background: #3a3d46;
+  border-color: var(--pc-accent-border);
+  color: #ffffff;
+}
+
+.rd-icon-btn.danger:hover {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #fca5a5;
+}
+
+/* Compact Photoshop-style Layer Controls inside Right Drawer */
+.rd-ctrl-box {
+  background: #292a30;
+  border: 1px solid #3d4049;
+  border-radius: 6px;
+  padding: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rd-ctrl-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rd-swatch-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 3px;
+}
+
+.rd-swatch-cell {
+  aspect-ratio: 1;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  cursor: pointer;
+}
+
+.rd-swatch-cell.active {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 1.5px var(--pc-accent);
+}
+
+/* ============================================================================
+ * Photoshop-Style "New Document" Canvas Selection Start Screen
+ * ============================================================================ */
+.new-doc-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 88;
+  background: rgba(16, 17, 21, 0.97);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.new-doc-overlay[hidden] {
+  display: none !important;
+}
+
+.nd-window {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: #232428;
+  color: #e6e8ec;
+  overflow: hidden;
+}
+
+.nd-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #1b1c20;
+  border-bottom: 1px solid #363840;
+  flex-shrink: 0;
+}
+
+.nd-titlebar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.nd-titlebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nd-cat-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px 0;
+  background: #1f2024;
+  border-bottom: 1px solid #363840;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.nd-cat-tab {
+  padding: 7px 10px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #9ca3af;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.nd-cat-tab:hover {
+  color: #e5e7eb;
+}
+
+.nd-cat-tab.active {
+  color: #ffffff;
+  border-bottom-color: #2680eb;
+}
+
+.nd-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+@media (min-width: 720px) {
+  .outer-environment:not(.phone-frame-mode) .nd-body {
+    flex-direction: row;
+    overflow: hidden;
+  }
+  .outer-environment:not(.phone-frame-mode) .nd-presets-col {
+    flex: 1;
+    overflow-y: auto;
+  }
+  .outer-environment:not(.phone-frame-mode) .nd-details-col {
+    width: 300px;
+    border-top: none;
+    border-left: 1px solid #363840;
+    overflow-y: auto;
+  }
+}
+
+.nd-presets-col {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.nd-hero {
+  text-align: center;
+  padding: 6px 6px 4px;
+}
+
+.nd-hero h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.nd-hero p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.nd-section-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #9ca3af;
+  letter-spacing: 0.05em;
+}
+
+.nd-quick-samples {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.nd-sample-pill {
+  padding: 3px 8px;
+  border-radius: 99px;
+  border: 1px solid #444752;
+  background: #2c2e35;
+  color: #cbd5e1;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.nd-sample-pill:hover {
+  border-color: #2680eb;
+  color: #ffffff;
+}
+
+.nd-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+}
+
+.nd-preset-card {
+  background: #2d2f36;
+  border: 1.5px solid #3d404a;
+  border-radius: 7px;
+  padding: 9px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: #e5e7eb;
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 0.14s, background 0.14s;
+}
+
+.nd-preset-card:hover {
+  background: #353842;
+  border-color: #5b6070;
+}
+
+.nd-preset-card.selected {
+  border-color: #2680eb;
+  background: rgba(38, 128, 235, 0.16);
+  box-shadow: 0 0 0 1px rgba(38, 128, 235, 0.5);
+}
+
+.nd-preset-icon {
+  color: #cbd5e1;
+}
+
+.nd-preset-name {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.15;
+}
+
+.nd-preset-meta {
+  font-size: 9.5px;
+  color: #9ca3af;
+  line-height: 1.2;
+}
+
+.nd-empty-msg {
+  grid-column: 1 / -1;
+  padding: 18px;
+  text-align: center;
+  font-size: 11.5px;
+  color: #9ca3af;
+  background: #2a2c32;
+  border-radius: 8px;
+}
+
+/* Right Preset Details Inspector */
+.nd-details-col {
+  background: #292a2f;
+  border-top: 1px solid #3a3c45;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.nd-details-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #9ca3af;
+  letter-spacing: 0.06em;
+}
+
+.nd-title-input {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 5px;
+  border: 1px solid #484b56;
+  background: #1d1e22;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.nd-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.nd-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.nd-field label {
+  font-size: 10.5px;
+  color: #b4b8c2;
+}
+
+.nd-input,
+.nd-select {
+  height: 28px;
+  padding: 0 7px;
+  border-radius: 4px;
+  border: 1px solid #4a4d57;
+  background: #1d1e22;
+  color: #f3f4f6;
+  font-size: 11.5px;
+}
+
+.nd-orient-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+}
+
+.nd-orient-btn {
+  width: 28px;
+  height: 26px;
+  border-radius: 4px;
+  border: 1px solid #4a4d57;
+  background: #1d1e22;
+  color: #d1d5db;
+  font-size: 14px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nd-orient-btn.active {
+  background: #2680eb;
+  border-color: #3b82f6;
+  color: #ffffff;
+}
+
+.nd-px-preview {
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: #1e2026;
+  border: 1px solid #373a44;
+  font-size: 10.5px;
+  color: #9ca3af;
+}
+
+.nd-px-preview strong {
+  color: #60a5fa;
+  font-family: var(--pc-font-mono);
+}
+
+.nd-details-footer {
+  position: sticky;
+  bottom: 0;
+  background: #24252a;
+  border-top: 1px solid #3c3e48;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 12px;
+  margin: 4px -12px -12px;
+}
+
+/* Compact Photoshop-Exact Layer Rows inside Right-Side Layers Drawer */
+.right-drawer-body .layer-row {
+  padding: 5px 6px;
+  gap: 6px;
+  min-height: 40px;
+}
+
+.right-drawer-body .layer-thumb {
+  width: 30px;
+  height: 30px;
+}
+
+.right-drawer-body .layer-thumb canvas {
+  width: 30px;
+  height: 30px;
+}
+
+.right-drawer-body .layer-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.right-drawer-body .layer-name-row {
+  gap: 4px;
+}
+
+.right-drawer-body .layer-name {
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.right-drawer-body .layer-submeta {
+  display: none;
+}
+
+.right-drawer-body .layer-row-actions {
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.right-drawer-body .layer-row-actions .icon-btn {
+  width: 22px;
+  height: 22px;
+}
+
+.right-drawer-body .layer-row-actions .icon-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* ============================================================================
+ * Settings Tab Configuration Cards & Tool Visibility Toggles
+ * ============================================================================ */
+.settings-section-card {
+  background: var(--pc-card);
+  border: 1px solid var(--pc-card-border);
+  border-radius: var(--pc-radius);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-section-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #93c5fd;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settings-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--pc-text);
+  cursor: pointer;
+}
+
+.settings-toggle-row small {
+  display: block;
+  font-size: 10.5px;
+  color: var(--pc-text-dim);
+}
+
+.settings-tool-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+}
+
+.settings-tool-chip {
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--pc-card-border);
+  background: rgba(18, 20, 26, 0.65);
+  font-size: 11px;
+  color: var(--pc-text);
+  cursor: pointer;
+}
+
+.settings-tool-chip input {
+  accent-color: var(--pc-accent);
+  margin: 0;
+  flex-shrink: 0;
 }
