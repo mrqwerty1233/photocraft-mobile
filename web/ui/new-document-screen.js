@@ -257,6 +257,7 @@ export class PhotoshopNewDocumentScreen {
     const el = this.overlay;
     const presets = this.getPresetsForCategory(this.activeCategory);
     const { pxW, pxH } = this.computeCanvasPixels();
+    const savedMeta = this.app?.getSavedProjectMeta?.() || null;
 
     el.innerHTML = `
       <div class="nd-window">
@@ -266,7 +267,8 @@ export class PhotoshopNewDocumentScreen {
             <span>New Document</span>
           </div>
           <div class="nd-titlebar-actions">
-            <button type="button" class="ps-fx-btn" id="nd-open-file-btn">Open Photo / PSD...</button>
+            <button type="button" class="ps-fx-btn primary" id="nd-import-photo-btn" title="Open Photo from Phone Gallery">📱 Import Photo</button>
+            <button type="button" class="ps-fx-btn" id="nd-open-file-btn" title="Open PSD or Project File from Phone">📂 Open PSD / File</button>
             ${this.allowClose ? `<button type="button" class="icon-btn" id="nd-close-x" title="Continue to Workspace" style="width:26px;height:26px;">✕</button>` : ''}
           </div>
         </header>
@@ -282,14 +284,31 @@ export class PhotoshopNewDocumentScreen {
           <div class="nd-presets-col">
             <div class="nd-hero">
               <h2>Let's start something new.</h2>
-              <p>Start with your own document settings or from a range of document presets to get working quickly.</p>
+              <p>Create a canvas, import a photo from your phone, or resume your auto-saved project.</p>
             </div>
+
+            ${
+              savedMeta
+                ? `
+            <div class="nd-resume-banner" id="nd-resume-saved-btn" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;border-radius:8px;background:rgba(20,115,230,0.18);border:1.5px solid #2680eb;cursor:pointer;">
+              <div style="display:flex;align-items:center;gap:9px;min-width:0;">
+                ${savedMeta.thumbDataUrl ? `<img src="${savedMeta.thumbDataUrl}" alt="" style="width:36px;height:36px;border-radius:5px;object-fit:cover;border:1px solid rgba(255,255,255,0.25);flex-shrink:0;" />` : `<span style="font-size:20px;">💾</span>`}
+                <div style="min-width:0;">
+                  <strong style="display:block;font-size:12px;color:#ffffff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">▶️ Resume Saved Work: ${savedMeta.title}</strong>
+                  <span style="font-size:10px;color:#93c5fd;">${savedMeta.width} × ${savedMeta.height} px · ${savedMeta.layerCount || 1} layer${(savedMeta.layerCount || 1) !== 1 ? 's' : ''} · Auto-Saved</span>
+                </div>
+              </div>
+              <span class="ps-fx-btn primary" style="flex-shrink:0;padding:0 10px;height:26px;display:inline-flex;align-items:center;">Resume ➔</span>
+            </div>`
+                : ''
+            }
 
             <div class="nd-section-bar">
               <span>${this.activeCategory === 'recent' ? `YOUR RECENT ITEMS (${presets.length})` : `${this.activeCategory.toUpperCase()} PRESETS (${presets.length})`}</span>
               <div class="nd-quick-samples">
-                <button type="button" class="nd-sample-pill" id="nd-sample-wave">🌊 Ocean Poster Sample</button>
-                <button type="button" class="nd-sample-pill" id="nd-sample-space">🪐 Deep Space Sample</button>
+                <button type="button" class="nd-sample-pill" id="nd-import-layer-pill">📱 Photo from Phone</button>
+                <button type="button" class="nd-sample-pill" id="nd-sample-wave">🌊 Ocean Sample</button>
+                <button type="button" class="nd-sample-pill" id="nd-sample-space">🪐 Space Sample</button>
               </div>
             </div>
 
@@ -438,9 +457,19 @@ export class PhotoshopNewDocumentScreen {
       });
     });
 
-    // Wire Open File & Sample Projects
+    // Wire Import Photo from Phone, Open File, Resume Saved Work & Sample Projects
+    el.querySelector('#nd-import-photo-btn')?.addEventListener('click', () => {
+      document.getElementById('file-input-phone-photo-open').click();
+    });
+    el.querySelector('#nd-import-layer-pill')?.addEventListener('click', () => {
+      document.getElementById('file-input-phone-photo-open').click();
+    });
     el.querySelector('#nd-open-file-btn').addEventListener('click', () => {
       document.getElementById('file-input-open').click();
+    });
+    el.querySelector('#nd-resume-saved-btn')?.addEventListener('click', async () => {
+      const ok = await this.app.restoreAutoSavedProject(true);
+      if (ok) this.close();
     });
     el.querySelector('#nd-sample-wave').addEventListener('click', () => {
       this.app.loadSampleProject('wave');

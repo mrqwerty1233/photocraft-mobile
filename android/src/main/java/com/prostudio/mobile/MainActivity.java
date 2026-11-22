@@ -95,9 +95,28 @@ public class MainActivity extends Activity {
                 }
                 MainActivity.this.filePathCallback = filePathCallback;
 
-                Intent intent = fileChooserParams.createIntent();
+                boolean imageOnly = false;
+                String[] acceptTypes = fileChooserParams != null ? fileChooserParams.getAcceptTypes() : null;
+                if (acceptTypes != null && acceptTypes.length == 1 && "image/*".equals(acceptTypes[0])) {
+                    imageOnly = true;
+                }
+
+                Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                if (imageOnly) {
+                    intent.setType("image/*");
+                    intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/png", "image/jpeg", "image/webp", "image/gif", "image/*"});
+                } else {
+                    // Use */* so Android Gallery, Photos, and Downloads allow picking images, .psd, .ttf, .otf, and project files
+                    intent.setType("*/*");
+                }
+
+                if (fileChooserParams != null && fileChooserParams.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE) {
+                    intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                }
+
                 try {
-                    startActivityForResult(intent, FILE_CHOOSER_REQUEST_CODE);
+                    startActivityForResult(Intent.createChooser(intent, "Import from Phone"), FILE_CHOOSER_REQUEST_CODE);
                 } catch (Exception e) {
                     MainActivity.this.filePathCallback = null;
                     return false;
@@ -108,6 +127,28 @@ public class MainActivity extends Activity {
 
         setContentView(webView);
         webView.loadUrl("file:///android_asset/www/index.html");
+    }
+
+    @Override
+    protected void onPause() {
+        if (webView != null) {
+            webView.evaluateJavascript(
+                    "if(window.proStudioMobile && window.proStudioMobile.autoSaveCurrentProject) window.proStudioMobile.autoSaveCurrentProject(true);",
+                    null
+            );
+        }
+        super.onPause();
+    }
+
+    @Override
+    protected void onStop() {
+        if (webView != null) {
+            webView.evaluateJavascript(
+                    "if(window.proStudioMobile && window.proStudioMobile.autoSaveCurrentProject) window.proStudioMobile.autoSaveCurrentProject(true);",
+                    null
+            );
+        }
+        super.onStop();
     }
 
     private boolean checkStoragePerm() {
@@ -160,7 +201,20 @@ public class MainActivity extends Activity {
                 super.onActivityResult(requestCode, resultCode, data);
                 return;
             }
-            Uri[] results = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
+            Uri[] results = null;
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                if (data.getClipData() != null) {
+                    int count = data.getClipData().getItemCount();
+                    results = new Uri[count];
+                    for (int i = 0; i < count; i++) {
+                        results[i] = data.getClipData().getItemAt(i).getUri();
+                    }
+                } else if (data.getData() != null) {
+                    results = new Uri[]{data.getData()};
+                } else {
+                    results = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
+                }
+            }
             filePathCallback.onReceiveValue(results);
             filePathCallback = null;
         } else if (requestCode == CREATE_FILE_REQUEST_CODE) {
@@ -187,14 +241,15 @@ public class MainActivity extends Activity {
     public void onBackPressed() {
         if (webView != null) {
             webView.evaluateJavascript(
-                    "(function(){ if(window.handleAndroidBack) return window.handleAndroidBack(); return false; })()",
+                    "(function(){ if(window.handleAndroidBack) return Boolean(window.handleAndroidBack()); return false; })()",
                     value -> {
                         if (!"true".equals(value)) {
-                            MainActivity.super.onBackPressed();
+                            // Move task to background instead of destroying Activity so work stays in RAM + IndexedDB auto-save
+                            moveTaskToBack(true);
                         }
                     });
         } else {
-            super.onBackPressed();
+            moveTaskToBack(true);
         }
     }
 
@@ -203,6 +258,11 @@ public class MainActivity extends Activity {
 
         ProStudioBridge(Context context) {
             this.context = context;
+        }
+
+        @JavascriptInterface
+        public void hapticTick() {
+            vibrate(8);
         }
 
         @JavascriptInterface

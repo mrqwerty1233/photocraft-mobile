@@ -262,6 +262,10 @@ class ProStudioMobileApp {
     this.workspaceSettings = this.loadWorkspaceSettings();
     this.rightLayersOpen = false;
     this.rightDrawerTab = 'layers';
+    this._initialLoadComplete = false;
+    this._userCreatedOrOpenedDoc = false;
+    this._autoSaveTimer = null;
+    this._lastBackPressTime = 0;
     this.newDocScreen = new PhotoshopNewDocumentScreen(this);
 
     this.initDOM();
@@ -271,13 +275,16 @@ class ProStudioMobileApp {
     this.initPinnedToolButtons();
     this.applyWorkspaceSettings();
     this.restorePersistedFonts();
-    this.loadDocument(SampleProjects.createOceanWaveProject());
+    this.loadDocument(SampleProjects.createOceanWaveProject(), false);
     this.startSelectionAntsTimer();
 
-    // Start on Photoshop-style "New Document" Canvas Selection Screen on launch!
-    if (this.workspaceSettings.showNewDocOnStart !== false) {
+    const hasSavedSession = Boolean(this.getSavedProjectMeta());
+    // Start on Photoshop-style "New Document" screen on fresh launch; if saved work exists, restore it directly!
+    if (!hasSavedSession && this.workspaceSettings.showNewDocOnStart !== false) {
       this.newDocScreen.open(true);
     }
+
+    this.initBackNavigationAndAutoSave(hasSavedSession);
   }
 
   getDefaultWorkspaceSettings() {
@@ -499,16 +506,20 @@ class ProStudioMobileApp {
   }
 
   loadSampleProject(kind) {
+    this._userCreatedOrOpenedDoc = true;
+    this._initialLoadComplete = true;
     if (kind === 'space') {
-      this.loadDocument(SampleProjects.createDeepSpaceProject());
+      this.loadDocument(SampleProjects.createDeepSpaceProject(), true);
       this.showToast('Loaded Deep-Space-Horizon.psd');
     } else {
-      this.loadDocument(SampleProjects.createOceanWaveProject());
+      this.loadDocument(SampleProjects.createOceanWaveProject(), true);
       this.showToast('Loaded Ocean-Wave-Poster.psd');
     }
   }
 
   createConfiguredDocument({ width, height, title, backgroundFill = '#ffffff', physicalLabel = '' }) {
+    this._userCreatedOrOpenedDoc = true;
+    this._initialLoadComplete = true;
     const doc = new StudioDoc(width, height, title || 'Untitled-1.psd');
     if (backgroundFill === 'transparent') {
       const lyr = doc.createLayerObject({ name: 'Layer 1', kind: 'raster' });
@@ -524,7 +535,7 @@ class ProStudioMobileApp {
     }
     doc.compose();
     doc.pushHistory('New Document');
-    this.loadDocument(doc);
+    this.loadDocument(doc, true);
     this.showToast(`Created ${doc.title} (${physicalLabel || `${width}×${height} px`})`);
   }
 
@@ -602,10 +613,14 @@ class ProStudioMobileApp {
       this.openExportModal();
     });
 
-    // Top Bar Dropdown Triggers (`File ▾`, `Select ▾`, `fx ▾`)
+    // Top Bar Dropdown Triggers (`File ▾`, `Import ▾`, `Select ▾`, `fx ▾`)
     document.getElementById('btn-file-dropdown').addEventListener('click', (e) => {
       e.stopPropagation();
       this.toggleDropdown('popover-file-menu', () => this.populateFileDropdown());
+    });
+    document.getElementById('btn-import-dropdown')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleDropdown('popover-import-menu', () => this.populateImportDropdown());
     });
     document.getElementById('btn-select-dropdown').addEventListener('click', (e) => {
       e.stopPropagation();
@@ -664,15 +679,31 @@ class ProStudioMobileApp {
     document.getElementById('sheet-close-handle').addEventListener('click', () => this.closeSheet());
     document.getElementById('modal-close-btn').addEventListener('click', () => this.closeModal());
 
-    // File input handlers
+    // File input handlers (Phone Gallery, Camera, PSD, Project JSON, and Custom Fonts)
     document.getElementById('file-input-open').addEventListener('change', (e) => {
       const file = e.target.files?.[0];
       if (file) this.handleOpenFile(file);
       e.target.value = '';
     });
-    document.getElementById('file-input-place-layer').addEventListener('change', (e) => {
+    document.getElementById('file-input-phone-photo-open')?.addEventListener('change', (e) => {
       const file = e.target.files?.[0];
-      if (file) this.handlePlaceImageAsLayer(file);
+      if (file) this.handleOpenFile(file);
+      e.target.value = '';
+    });
+    document.getElementById('file-input-place-layer').addEventListener('change', async (e) => {
+      const files = Array.from(e.target.files || []);
+      for (const file of files) {
+        await this.handlePlaceImageAsLayer(file);
+      }
+      e.target.value = '';
+    });
+    document.getElementById('file-input-phone-camera')?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (file) {
+        const ndOpen = !document.getElementById('new-doc-overlay')?.hidden;
+        if (ndOpen) await this.handleOpenFile(file);
+        else await this.handlePlaceImageAsLayer(file);
+      }
       e.target.value = '';
     });
     document.getElementById('file-input-font').addEventListener('change', (e) => {
@@ -690,7 +721,7 @@ class ProStudioMobileApp {
     });
     ro.observe(this.workspaceEl);
 
-    this.session.onChange(() => {
+    this.session.onChange((event) => {
       this.syncHeaderAndHUD();
       if (this.activeSheet !== 'none') {
         this.renderActiveSheet();
@@ -700,6 +731,9 @@ class ProStudioMobileApp {
       }
       this.renderFloatingContextBar();
       this.requestRender();
+      if (this._initialLoadComplete && event !== 'document.restored') {
+        this.scheduleAutoSave();
+      }
     });
 
     this.syncColorSwatches();
@@ -753,12 +787,44 @@ class ProStudioMobileApp {
     container.appendChild(btn);
   }
 
+  populateImportDropdown() {
+    const menu = document.getElementById('popover-import-menu');
+    if (!menu) return;
+    menu.innerHTML = `<div class="dropdown-section-label">Import from Your Phone</div>`;
+    this.addDropdownMenuItem(menu, '📱 Import Photo as Layer...', 'Gallery', false, () => {
+      document.getElementById('file-input-place-layer').click();
+    });
+    this.addDropdownMenuItem(menu, '🖼️ Open Photo as New Canvas...', 'Gallery', false, () => {
+      document.getElementById('file-input-phone-photo-open').click();
+    });
+    this.addDropdownMenuItem(menu, '📷 Take Photo with Camera...', 'Camera', false, () => {
+      document.getElementById('file-input-phone-camera').click();
+    });
+    this.addDropdownMenuItem(menu, '📂 Open PSD / Project File...', '.PSD', false, () => {
+      document.getElementById('file-input-open').click();
+    });
+    this.addDropdownMenuItem(menu, '🔤 Import Downloaded Font...', '.TTF/.OTF', false, () => {
+      document.getElementById('file-input-font').click();
+    });
+
+    const d = document.createElement('div');
+    d.className = 'dropdown-divider';
+    menu.appendChild(d);
+
+    this.addDropdownMenuItem(menu, '💾 Save Work Now (Auto-Save)', '✓ Saved', false, () => {
+      this.autoSaveCurrentProject(true);
+      this.showToast('✓ Project saved to device storage');
+    });
+  }
+
   populateFileDropdown() {
     const menu = document.getElementById('popover-file-menu');
-    menu.innerHTML = `<div class="dropdown-section-label">Document &amp; File I/O</div>`;
+    menu.innerHTML = `<div class="dropdown-section-label">Document &amp; Import from Phone</div>`;
     this.addDropdownMenuItem(menu, '📄 New Document / Presets...', '⌘N', false, () => this.newDocScreen.open(true));
-    this.addDropdownMenuItem(menu, '📂 Open PSD or Image...', '⌘O', false, () => document.getElementById('file-input-open').click());
-    this.addDropdownMenuItem(menu, '🖼️ Place Image as Layer...', '', false, () => document.getElementById('file-input-place-layer').click());
+    this.addDropdownMenuItem(menu, '📱 Import Photo as Layer...', 'Gallery', false, () => document.getElementById('file-input-place-layer').click());
+    this.addDropdownMenuItem(menu, '🖼️ Open Photo as New Canvas...', 'Gallery', false, () => document.getElementById('file-input-phone-photo-open').click());
+    this.addDropdownMenuItem(menu, '📷 Take Photo with Camera...', 'Camera', false, () => document.getElementById('file-input-phone-camera').click());
+    this.addDropdownMenuItem(menu, '📂 Open PSD or Project File...', '⌘O', false, () => document.getElementById('file-input-open').click());
     this.addDropdownMenuItem(menu, '🔤 Import Font (.ttf/.otf)...', '', false, () => document.getElementById('file-input-font').click());
 
     const d1 = document.createElement('div');
@@ -767,9 +833,13 @@ class ProStudioMobileApp {
 
     const lbl2 = document.createElement('div');
     lbl2.className = 'dropdown-section-label';
-    lbl2.textContent = 'Workspace, Storage & Export';
+    lbl2.textContent = 'Save, Storage & Export';
     menu.appendChild(lbl2);
 
+    this.addDropdownMenuItem(menu, '💾 Save Project Now', 'Auto-Save', false, () => {
+      this.autoSaveCurrentProject(true);
+      this.showToast('✓ Work saved to device storage!');
+    });
     this.addDropdownMenuItem(menu, '⚙️ Workspace & Toolbar Settings...', '', false, () => this.toggleSheet('settings'));
     this.addDropdownMenuItem(
       menu,
@@ -778,7 +848,7 @@ class ProStudioMobileApp {
       false,
       () => this.openStorageSettingsModal()
     );
-    this.addDropdownMenuItem(menu, '💾 Export / Save As...', '.PSD/.PNG', false, () => this.openExportModal());
+    this.addDropdownMenuItem(menu, '📤 Export / Save File As...', '.PSD/.PNG', false, () => this.openExportModal());
 
     const d2 = document.createElement('div');
     d2.className = 'dropdown-divider';
@@ -790,12 +860,10 @@ class ProStudioMobileApp {
     menu.appendChild(lbl3);
 
     this.addDropdownMenuItem(menu, '🌊 Ocean Wave Poster.psd', '6 Layers', false, () => {
-      this.loadDocument(SampleProjects.createOceanWaveProject());
-      this.showToast('Loaded Ocean-Wave-Poster.psd');
+      this.loadSampleProject('wave');
     });
     this.addDropdownMenuItem(menu, '🪐 Deep Space Horizon.psd', '4 Layers', false, () => {
-      this.loadDocument(SampleProjects.createDeepSpaceProject());
-      this.showToast('Loaded Deep-Space-Horizon.psd');
+      this.loadSampleProject('space');
     });
   }
 
@@ -1155,7 +1223,7 @@ class ProStudioMobileApp {
     } catch (_) {}
   }
 
-  loadDocument(doc) {
+  loadDocument(doc, triggerAutoSave = true) {
     if (this.inlineTextSession) {
       this.inlineTextSession = null;
       const wrap = document.getElementById('inline-text-editor-wrap');
@@ -1166,7 +1234,10 @@ class ProStudioMobileApp {
     this.resizeViewportCanvas();
     this.fitCanvasToViewport();
     this.renderTopTypeBar();
-    this.session.notify('document.loaded');
+    this.session.notify(triggerAutoSave ? 'document.loaded' : 'document.restored');
+    if (triggerAutoSave && this._initialLoadComplete) {
+      this.scheduleAutoSave();
+    }
   }
 
   resetCropBoxes(doc = this.session.doc) {
@@ -1237,7 +1308,7 @@ class ProStudioMobileApp {
     if (!doc) return;
     document.getElementById('doc-title-label').textContent = doc.title;
     document.getElementById('doc-dimensions-label').textContent =
-      `${doc.width} × ${doc.height} px · ${doc.layers.length} layer${doc.layers.length !== 1 ? 's' : ''}`;
+      `${doc.width}×${doc.height} · ${doc.layers.length}L`;
     document.getElementById('nav-layer-count').textContent = String(doc.layers.length);
     document.getElementById('btn-undo').disabled = !doc.canUndo();
     document.getElementById('btn-redo').disabled = !doc.canRedo();
@@ -1282,22 +1353,14 @@ class ProStudioMobileApp {
       } else if (toolId === 'perspectiveCrop') {
         if (!this.perspectiveQuad) this.resetCropBoxes(doc);
         if (doc.hasSelection) doc.clearSelection();
-      } else if ((toolId === 'slice' || toolId === 'sliceSelect') && doc.slices.length === 0) {
+      } else if (toolId === 'sliceSelect' && doc.slices.length === 0) {
         doc.addSlice({
-          name: 'header_banner',
-          x: Math.round(doc.width * 0.08),
-          y: Math.round(doc.height * 0.12),
-          w: Math.round(doc.width * 0.84),
-          h: Math.round(doc.height * 0.48),
+          name: 'slice_01',
+          x: Math.round(doc.width * 0.1),
+          y: Math.round(doc.height * 0.1),
+          w: Math.round(doc.width * 0.8),
+          h: Math.round(doc.height * 0.8),
           origin: 'user'
-        });
-        doc.addSlice({
-          name: 'title_card',
-          x: 70,
-          y: 770,
-          w: Math.min(760, doc.width - 140),
-          h: Math.min(245, doc.height - 800),
-          origin: 'layer'
         });
       }
     }
@@ -1320,6 +1383,7 @@ class ProStudioMobileApp {
     // Live typing updates layer textData and auto-sizes the on-canvas text box!
     input.addEventListener('input', () => {
       if (!this.inlineTextSession) return;
+      this.inlineTextSession.typed = true;
       const lyr = this.inlineTextSession.layer;
       lyr.textData.text = input.value;
       const firstLine = input.value.split('\n')[0]?.trim();
@@ -1469,6 +1533,8 @@ class ProStudioMobileApp {
     this.inlineTextSession = {
       layer,
       isNew,
+      typed: false,
+      startedAt: performance.now(),
       originalTextData: structuredClone(td),
       originalName: layer.name
     };
@@ -2136,14 +2202,15 @@ class ProStudioMobileApp {
         this.openTextEditorModal(this.session.doc?.activeLayer?.kind === 'text' ? this.session.doc.activeLayer : null)
       );
     } else if (this.activeTool === 'move') {
+      addButton('📱 +Photo Layer', true, () => document.getElementById('file-input-place-layer').click());
       addButton('Flip H', false, () => this.session.dispatch('transform.flipHorizontal'));
       addButton('Flip V', false, () => this.session.dispatch('transform.flipVertical'));
       addButton('Rotate 90°', false, () => {
         this.session.dispatch('transform.rotate90CW');
         this.fitCanvasToViewport();
       });
-      addButton('Scale 90%', false, () => this.scaleActiveLayer(0.9));
-      addButton('Scale 110%', false, () => this.scaleActiveLayer(1.1));
+      addButton('−10%', false, () => this.scaleActiveLayer(0.9));
+      addButton('+10%', false, () => this.scaleActiveLayer(1.1));
     } else if (this.activeTool === 'fill') {
       addSelectDropdown(
         [
@@ -2393,6 +2460,19 @@ class ProStudioMobileApp {
           st.targetCanvas.getContext('2d').drawImage(st.baseCanvas, 0, 0);
           this.brush.activeStroke = null;
           this.session.doc?.endFastInteraction();
+        }
+        if (this.toolDrag?.type === 'move') {
+          const drag = this.toolDrag;
+          drag.targetCanvas.getContext('2d').clearRect(0, 0, drag.targetCanvas.width, drag.targetCanvas.height);
+          drag.targetCanvas.getContext('2d').drawImage(drag.snapCanvas, 0, 0);
+          this.session.doc?.endFastInteraction();
+        }
+        if (
+          this.inlineTextSession?.isNew &&
+          !this.inlineTextSession.typed &&
+          performance.now() - (this.inlineTextSession.startedAt || 0) < 320
+        ) {
+          this.cancelInlineTextEdit();
         }
         this.toolDrag = null;
         document.getElementById('pixel-loupe').hidden = true;
@@ -2680,7 +2760,8 @@ class ProStudioMobileApp {
         dy: 0,
         targetCanvas,
         snapCanvas: snap,
-        origTextPos: layer.textData ? { x: layer.textData.x, y: layer.textData.y } : null
+        origTextPos: layer.textData ? { x: layer.textData.x, y: layer.textData.y } : null,
+        origShapePos: layer.shapeData ? { x: layer.shapeData.x, y: layer.shapeData.y } : null
       };
       return;
     }
@@ -2904,8 +2985,12 @@ class ProStudioMobileApp {
       if (Math.abs(drag.dx) > 1 || Math.abs(drag.dy) > 1) {
         const layer = doc.activeLayer;
         if (layer?.textData && drag.origTextPos && !doc.editingMask) {
-          layer.textData.x = drag.origTextPos.x + drag.dx;
-          layer.textData.y = drag.origTextPos.y + drag.dy;
+          layer.textData.x = Math.round(drag.origTextPos.x + drag.dx);
+          layer.textData.y = Math.round(drag.origTextPos.y + drag.dy);
+        }
+        if (layer?.shapeData && drag.origShapePos && !doc.editingMask) {
+          layer.shapeData.x = Math.round(drag.origShapePos.x + drag.dx);
+          layer.shapeData.y = Math.round(drag.origShapePos.y + drag.dy);
         }
         doc.pushHistory('Move Layer');
       }
@@ -3841,6 +3926,7 @@ class ProStudioMobileApp {
       actSel.style.maxWidth = '86px';
       actSel.innerHTML = `
         <option value="">More ▾</option>
+        <option value="importPhoto">📱 Import Photo Layer...</option>
         <option value="fx">Layer Style (fx)...</option>
         <option value="clip">Clipping Mask</option>
         <option value="invMask">Invert Mask</option>
@@ -3850,11 +3936,12 @@ class ProStudioMobileApp {
       actSel.addEventListener('change', () => {
         const v = actSel.value;
         actSel.value = '';
-        if (v === 'fx') this.openLayerStylesModal();
+        if (v === 'importPhoto') document.getElementById('file-input-place-layer').click();
+        else if (v === 'fx') this.openLayerStylesModal();
         else if (v === 'clip') this.session.dispatch('layer.toggleClipping');
         else if (v === 'invMask') this.session.dispatch('layer.invertMask');
         else if (v === 'merge') this.session.dispatch('layer.mergeDown');
-        else if (v === 'flatten') this.session.dispatch('layer.flatten');
+        else if (v === 'flatten') this.session.dispatch('layer.flattenImage');
       });
 
       row1.appendChild(bmSel);
@@ -3907,7 +3994,7 @@ class ProStudioMobileApp {
     this.populateLayerStackRows(list, doc);
     body.appendChild(list);
 
-    // Bottom Photoshop Layers Bar (fx | Mask | Adj | Dup | +New | Delete) — Matches Photo 3!
+    // Bottom Photoshop Layers Bar (fx | Mask | Adj | Import Photo | Dup | +New | Delete)
     const mkFootBtn = (html, title, cls, fn) => {
       const b = document.createElement('button');
       b.type = 'button';
@@ -3923,6 +4010,7 @@ class ProStudioMobileApp {
       this.setRightLayersOpen(false);
       this.toggleSheet('adjustments');
     });
+    mkFootBtn('🖼️', 'Import Photo from Phone as Layer', '', () => document.getElementById('file-input-place-layer').click());
     mkFootBtn('⧉', 'Duplicate Layer', '', () => this.session.dispatch('layer.duplicate'));
     mkFootBtn('+', 'Create a New Layer', '', () => this.session.dispatch('layer.new'));
     mkFootBtn('🗑', 'Delete Layer', 'danger', () => this.session.dispatch('layer.delete'));
@@ -5308,15 +5396,22 @@ class ProStudioMobileApp {
         <button type="button" class="pill-action-btn" id="sheet-btn-storage-cfg">Storage &amp; Folder...</button>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-        <button type="button" class="pill-action-btn secondary" id="set-open-psd" style="height:32px;justify-content:center;">📂 Open PSD / Photo</button>
+        <button type="button" class="pill-action-btn secondary" id="set-import-photo-layer" style="height:32px;justify-content:center;">📱 Import Photo Layer</button>
+        <button type="button" class="pill-action-btn secondary" id="set-open-psd" style="height:32px;justify-content:center;">📂 Open Photo / PSD</button>
         <button type="button" class="pill-action-btn secondary" id="set-import-font" style="height:32px;justify-content:center;">🔤 Import Font (.ttf)</button>
-        <button type="button" class="pill-action-btn" id="set-export-btn" style="height:32px;justify-content:center;">💾 Export / Save As</button>
+        <button type="button" class="pill-action-btn secondary" id="set-save-work-now" style="height:32px;justify-content:center;">💾 Save Work Now</button>
+        <button type="button" class="pill-action-btn" id="set-export-btn" style="height:32px;justify-content:center;">📤 Export / Save As</button>
         <a href="prostudio-mobile.apk" download="prostudio-mobile.apk" class="apk-download-btn" style="height:32px;justify-content:center;">⬇ Download APK</a>
       </div>
     `;
     stCard.querySelector('#sheet-btn-storage-cfg').addEventListener('click', () => this.openStorageSettingsModal());
+    stCard.querySelector('#set-import-photo-layer').addEventListener('click', () => document.getElementById('file-input-place-layer').click());
     stCard.querySelector('#set-open-psd').addEventListener('click', () => document.getElementById('file-input-open').click());
     stCard.querySelector('#set-import-font').addEventListener('click', () => document.getElementById('file-input-font').click());
+    stCard.querySelector('#set-save-work-now').addEventListener('click', () => {
+      this.autoSaveCurrentProject(true);
+      this.showToast('✓ Work saved to device storage!');
+    });
     stCard.querySelector('#set-export-btn').addEventListener('click', () => this.openExportModal());
     body.appendChild(stCard);
   }
@@ -5831,7 +5926,29 @@ class ProStudioMobileApp {
 
   async handleOpenFile(file) {
     try {
-      const name = file.name.toLowerCase();
+      const name = (file.name || '').toLowerCase();
+      // Smart-route font files if picked via general file picker
+      if (/\.(ttf|otf|woff2?|ttc)$/i.test(name)) {
+        await this.handleImportFontFiles([file]);
+        return;
+      }
+
+      this._userCreatedOrOpenedDoc = true;
+      this._initialLoadComplete = true;
+
+      if (name.endsWith('.psproj') || name.endsWith('.json')) {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        const restored = await this.deserializeProjectSnapshot(parsed);
+        if (restored) {
+          this.loadDocument(restored, true);
+          this.newDocScreen?.close();
+          this.closeSheet();
+          this.showToast(`Opened Project ${restored.title} (${restored.layers.length} layers)`);
+          return;
+        }
+      }
+
       if (name.endsWith('.psd') || name.endsWith('.psb')) {
         const buf = await file.arrayBuffer();
         const decoded = PsdCodec.decodePsd(buf);
@@ -5851,49 +5968,476 @@ class ProStudioMobileApp {
         doc.activeLayerId = doc.layers[doc.layers.length - 1]?.id || null;
         doc.compose();
         doc.pushHistory(`Open ${file.name}`);
-        this.loadDocument(doc);
+        this.loadDocument(doc, true);
         this.newDocScreen?.close();
         this.closeSheet();
         this.showToast(`Opened PSD (${doc.layers.length} layers)`);
         return;
       }
 
-      const bmp = await createImageBitmap(file);
-      const doc = new StudioDoc(bmp.width, bmp.height, file.name.replace(/\.[^.]+$/, '.psd'));
-      const bg = doc.createLayerObject({ name: file.name, kind: 'raster' });
-      bg.canvas.getContext('2d').drawImage(bmp, 0, 0);
+      const bmp = await this.decodeImageFileToDrawable(file);
+      // Cap ultra-high-res phone camera photos to max 2048px while keeping exact aspect ratio for 60fps mobile GPU speed
+      const maxDim = 2048;
+      let w = bmp.width || bmp.naturalWidth || 1080;
+      let h = bmp.height || bmp.naturalHeight || 1080;
+      if (w > maxDim || h > maxDim) {
+        const ratio = maxDim / Math.max(w, h);
+        w = Math.max(64, Math.round(w * ratio));
+        h = Math.max(64, Math.round(h * ratio));
+      }
+
+      const doc = new StudioDoc(w, h, (file.name || 'Phone-Photo').replace(/\.[^.]+$/, '.psd'));
+      const bg = doc.createLayerObject({ name: (file.name || 'Photo').replace(/\.[^.]+$/, ''), kind: 'raster' });
+      bg.canvas.getContext('2d').drawImage(bmp, 0, 0, w, h);
       doc.layers.push(bg);
       doc.activeLayerId = bg.id;
       doc.compose();
-      doc.pushHistory(`Open ${file.name}`);
-      this.loadDocument(doc);
+      doc.pushHistory(`Open ${file.name || 'Photo'}`);
+      this.loadDocument(doc, true);
       this.newDocScreen?.close();
       this.closeSheet();
-      this.showToast(`Opened ${file.name} (${bmp.width}×${bmp.height})`);
+      this.showToast(`Imported ${file.name || 'Photo'} (${w}×${h})`);
     } catch (err) {
-      this.showToast(`Error opening file: ${err.message}`);
+      this.showToast(`Error importing file: ${err.message}`);
     }
   }
 
+  async decodeImageFileToDrawable(file) {
+    if (typeof createImageBitmap === 'function') {
+      try {
+        return await createImageBitmap(file);
+      } catch (_) {
+        // Fallback to HTMLImageElement below for WebViews with strict ImageBitmap codecs
+      }
+    }
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(img);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('Unsupported image format'));
+      };
+      img.src = url;
+    });
+  }
+
   async handlePlaceImageAsLayer(file) {
+    const name = (file?.name || '').toLowerCase();
+    if (name.endsWith('.psd') || name.endsWith('.psb') || /\.(ttf|otf|woff2?)$/i.test(name)) {
+      return this.handleOpenFile(file);
+    }
     const doc = this.session.doc;
     if (!doc) return;
     try {
-      const bmp = await createImageBitmap(file);
-      const lyr = doc.createLayerObject({ name: file.name.replace(/\.[^.]+$/, ''), kind: 'raster' });
+      this._userCreatedOrOpenedDoc = true;
+      this._initialLoadComplete = true;
+      const bmp = await this.decodeImageFileToDrawable(file);
+      const imgW = bmp.width || bmp.naturalWidth || doc.width;
+      const imgH = bmp.height || bmp.naturalHeight || doc.height;
+      const lyr = doc.createLayerObject({ name: (file.name || 'Phone Photo').replace(/\.[^.]+$/, ''), kind: 'raster' });
       const ctx = lyr.canvas.getContext('2d');
-      const scale = Math.min(doc.width / bmp.width, doc.height / bmp.height, 1);
-      const w = bmp.width * scale;
-      const h = bmp.height * scale;
-      ctx.drawImage(bmp, (doc.width - w) / 2, (doc.height - h) / 2, w, h);
-      doc.layers.push(lyr);
+      const scale = Math.min(doc.width / imgW, doc.height / imgH, 1);
+      const w = Math.round(imgW * scale);
+      const h = Math.round(imgH * scale);
+      ctx.drawImage(bmp, Math.round((doc.width - w) / 2), Math.round((doc.height - h) / 2), w, h);
+
+      const activeIdx = doc.layers.findIndex((l) => l.id === doc.activeLayerId);
+      if (activeIdx >= 0) {
+        doc.layers.splice(activeIdx + 1, 0, lyr);
+      } else {
+        doc.layers.push(lyr);
+      }
       doc.activeLayerId = lyr.id;
-      doc.pushHistory(`Place ${lyr.name}`);
+      doc.editingMask = false;
+      doc.pushHistory(`Import ${lyr.name}`);
+      this.newDocScreen?.close();
+      this.closeSheet();
+      // Auto-select Move & Transform tool so user can immediately drag/resize their imported photo!
+      this.selectTool('move');
       this.session.notify('layer.placed');
-      this.showToast(`Placed ${lyr.name} as new layer`);
+      this.showToast(`📱 Imported "${lyr.name}" as layer — drag on canvas to move!`);
     } catch (err) {
-      this.showToast(`Could not place image: ${err.message}`);
+      this.showToast(`Could not import image: ${err.message}`);
     }
+  }
+
+  /* ==========================================================================
+   * Android & Browser Back Button Hierarchy + IndexedDB Auto-Save & Restore
+   * ========================================================================== */
+  initBackNavigationAndAutoSave(hasSavedSession) {
+    // 1. Register global Android native Back button handler called by MainActivity.onBackPressed()
+    window.handleAndroidBack = () => this.handleBackAction();
+
+    // 2. Push browser history guard so mobile gesture-back / browser back is also intercepted cleanly
+    try {
+      window.history.pushState({ prostudioGuard: true }, '');
+      window.addEventListener('popstate', () => {
+        const consumed = this.handleBackAction();
+        if (consumed) {
+          try {
+            window.history.pushState({ prostudioGuard: true }, '');
+          } catch (_) {}
+        }
+      });
+    } catch (_) {}
+
+    // 3. Auto-save immediately whenever app goes to background, tab hides, or page unloads
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden' && this._initialLoadComplete) {
+        if (this.inlineTextSession) this.commitInlineTextEdit();
+        this.autoSaveCurrentProject(true);
+      }
+    });
+    window.addEventListener('pagehide', () => {
+      if (this._initialLoadComplete) {
+        if (this.inlineTextSession) this.commitInlineTextEdit();
+        this.autoSaveCurrentProject(true);
+      }
+    });
+    window.addEventListener('beforeunload', () => {
+      if (this._initialLoadComplete) {
+        if (this.inlineTextSession) this.commitInlineTextEdit();
+        this.autoSaveCurrentProject(true);
+      }
+    });
+
+    // 4. Automatically restore saved work on startup if a saved session exists
+    if (hasSavedSession) {
+      this.restoreAutoSavedProject(false).finally(() => {
+        this._initialLoadComplete = true;
+      });
+    } else {
+      this._initialLoadComplete = true;
+    }
+  }
+
+  /**
+   * Smart Photoshop Mobile Back Button Hierarchy:
+   * Closes open dropdowns -> modals -> live text edit -> right layers drawer -> bottom sheets -> active crop -> New Doc overlay.
+   * When on the main canvas, auto-saves immediately and requires a double-Back press within 2.5s to exit!
+   */
+  handleBackAction() {
+    // 1. Any open dropdown menu or tool flyout?
+    const openPopovers = Array.from(document.querySelectorAll('.dropdown-popover')).filter((el) => !el.hidden);
+    if (openPopovers.length > 0) {
+      this.closeAllDropdowns();
+      return true;
+    }
+
+    // 2. Any open modal dialog (Layer Style fx, Export, Color Picker, Storage)?
+    const modalOverlay = document.getElementById('modal-overlay');
+    if (modalOverlay && !modalOverlay.hidden) {
+      this.closeModal();
+      return true;
+    }
+
+    // 3. Active live on-canvas text editing?
+    if (this.inlineTextSession) {
+      this.commitInlineTextEdit();
+      this.showToast('Committed Type Layer');
+      return true;
+    }
+
+    // 4. Right-Side Docked Layers Drawer open?
+    if (this.rightLayersOpen) {
+      this.setRightLayersOpen(false);
+      return true;
+    }
+
+    // 5. Any Bottom Sheet (Adjustments, Filters, Settings) open?
+    if (this.activeSheet !== 'none') {
+      this.closeSheet();
+      return true;
+    }
+
+    // 6. Active Crop or Perspective Crop tool? Cancel back to Brush tool
+    if (this.activeTool === 'crop' || this.activeTool === 'perspectiveCrop') {
+      this.selectTool('brush');
+      this.showToast('Exited Crop Mode');
+      return true;
+    }
+
+    // 7. New Document screen open over an existing document? Close it back to canvas!
+    const ndOverlay = document.getElementById('new-doc-overlay');
+    if (ndOverlay && !ndOverlay.hidden && this.session.doc) {
+      this.newDocScreen.close();
+      return true;
+    }
+
+    // 8. On main canvas: immediately auto-save work & require double-back within 2.5s to exit app!
+    this.autoSaveCurrentProject(true);
+    const now = Date.now();
+    if (now - (this._lastBackPressTime || 0) < 2500) {
+      return false; // Allow MainActivity to moveTaskToBack(true) with work safely saved
+    }
+    this._lastBackPressTime = now;
+    this.showToast('💾 Work Auto-Saved! Press Back again to exit');
+    return true;
+  }
+
+  getSavedProjectMeta() {
+    try {
+      const raw = localStorage.getItem('prostudio_autosave_meta_v1');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  setAutoSaveBadgeState(saving = false) {
+    const badge = document.getElementById('autosave-status-badge');
+    if (!badge) return;
+    if (saving) {
+      badge.textContent = '⟳ Saving';
+      badge.classList.add('saving');
+    } else {
+      badge.textContent = '✓ Saved';
+      badge.classList.remove('saving');
+    }
+  }
+
+  scheduleAutoSave() {
+    if (!this._initialLoadComplete) return;
+    this.setAutoSaveBadgeState(true);
+    if (this._autoSaveTimer) clearTimeout(this._autoSaveTimer);
+    this._autoSaveTimer = setTimeout(() => {
+      this._autoSaveTimer = null;
+      this.autoSaveCurrentProject(false);
+    }, 420);
+  }
+
+  openAutoSaveDB() {
+    if (this._idbPromise) return this._idbPromise;
+    this._idbPromise = new Promise((resolve, reject) => {
+      if (typeof indexedDB === 'undefined') {
+        reject(new Error('IndexedDB unavailable'));
+        return;
+      }
+      const req = indexedDB.open('ProStudioWorkDB', 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('projects')) {
+          db.createObjectStore('projects');
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    return this._idbPromise;
+  }
+
+  serializeCurrentProject() {
+    const doc = this.session.doc;
+    if (!doc) return null;
+    doc.compose();
+
+    // Generate compact 96x96 thumbnail for Resume banner
+    let thumbDataUrl = '';
+    try {
+      const tc = document.createElement('canvas');
+      tc.width = 96;
+      tc.height = 96;
+      const tCtx = tc.getContext('2d');
+      const scale = Math.max(96 / doc.width, 96 / doc.height);
+      const dw = doc.width * scale;
+      const dh = doc.height * scale;
+      tCtx.drawImage(doc.compositeCanvas, (96 - dw) / 2, (96 - dh) / 2, dw, dh);
+      thumbDataUrl = tc.toDataURL('image/jpeg', 0.72);
+    } catch (_) {}
+
+    return {
+      version: 1,
+      savedAt: Date.now(),
+      title: doc.title,
+      width: doc.width,
+      height: doc.height,
+      activeLayerId: doc.activeLayerId,
+      editingMask: Boolean(doc.editingMask),
+      globalLight: structuredClone(doc.globalLight || { angle: 120, altitude: 30 }),
+      slices: structuredClone(doc.slices || []),
+      selectedSliceId: doc.selectedSliceId || null,
+      hideAutoSlices: Boolean(doc.hideAutoSlices),
+      fgColor: this.fgColor,
+      bgColor: this.bgColor,
+      zoom: this.zoom,
+      panX: this.panX,
+      panY: this.panY,
+      typeSettings: structuredClone(this.typeSettings),
+      thumbDataUrl,
+      layers: doc.layers.map((l) => ({
+        id: l.id,
+        name: l.name,
+        kind: l.kind,
+        visible: l.visible !== false,
+        opacity: l.opacity ?? 1,
+        fill: l.fill ?? 1,
+        blendMode: l.blendMode || 'source-over',
+        locked: Boolean(l.locked),
+        clipping: Boolean(l.clipping),
+        maskEnabled: l.maskEnabled !== false,
+        adjustment: l.adjustment ? structuredClone(l.adjustment) : null,
+        textData: l.textData ? structuredClone(l.textData) : null,
+        shapeData: l.shapeData ? structuredClone(l.shapeData) : null,
+        styles: l.styles ? structuredClone(l.styles) : null,
+        canvasDataUrl: l.kind === 'adjustment' ? null : l.canvas.toDataURL('image/png'),
+        maskDataUrl: l.maskCanvas ? l.maskCanvas.toDataURL('image/png') : null
+      }))
+    };
+  }
+
+  async autoSaveCurrentProject(immediate = false) {
+    if (this._autoSaveTimer && immediate) {
+      clearTimeout(this._autoSaveTimer);
+      this._autoSaveTimer = null;
+    }
+    const snapshot = this.serializeCurrentProject();
+    if (!snapshot) return false;
+
+    this.setAutoSaveBadgeState(true);
+
+    const meta = {
+      title: snapshot.title,
+      width: snapshot.width,
+      height: snapshot.height,
+      layerCount: snapshot.layers.length,
+      savedAt: snapshot.savedAt,
+      thumbDataUrl: snapshot.thumbDataUrl
+    };
+    try {
+      localStorage.setItem('prostudio_autosave_meta_v1', JSON.stringify(meta));
+    } catch (_) {}
+
+    // Save compact JSON fallback in localStorage if within quota
+    try {
+      const jsonStr = JSON.stringify(snapshot);
+      if (jsonStr.length < 3800000) {
+        localStorage.setItem('prostudio_autosave_fallback_v1', jsonStr);
+      }
+    } catch (_) {}
+
+    // Primary high-capacity persistence in IndexedDB
+    try {
+      const db = await this.openAutoSaveDB();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction('projects', 'readwrite');
+        tx.objectStore('projects').put(snapshot, 'current_active_project');
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch (_) {}
+
+    this.setAutoSaveBadgeState(false);
+    return true;
+  }
+
+  loadDataUrlToCanvas(dataUrl, width, height) {
+    return new Promise((resolve) => {
+      const c = document.createElement('canvas');
+      c.width = width;
+      c.height = height;
+      if (!dataUrl) {
+        resolve(c);
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        c.getContext('2d').drawImage(img, 0, 0);
+        resolve(c);
+      };
+      img.onerror = () => resolve(c);
+      img.src = dataUrl;
+    });
+  }
+
+  async deserializeProjectSnapshot(snapshot) {
+    if (!snapshot || !snapshot.width || !snapshot.height || !Array.isArray(snapshot.layers)) {
+      return null;
+    }
+    const doc = new StudioDoc(snapshot.width, snapshot.height, snapshot.title || 'Restored-Work.psd');
+    doc.globalLight = snapshot.globalLight ? structuredClone(snapshot.globalLight) : { angle: 120, altitude: 30 };
+    doc.slices = Array.isArray(snapshot.slices) ? structuredClone(snapshot.slices) : [];
+    doc.selectedSliceId = snapshot.selectedSliceId || null;
+    doc.hideAutoSlices = Boolean(snapshot.hideAutoSlices);
+
+    for (const lSnap of snapshot.layers) {
+      const srcCanvas = lSnap.canvasDataUrl
+        ? await this.loadDataUrlToCanvas(lSnap.canvasDataUrl, doc.width, doc.height)
+        : null;
+      const maskCanvas = lSnap.maskDataUrl
+        ? await this.loadDataUrlToCanvas(lSnap.maskDataUrl, doc.width, doc.height)
+        : null;
+
+      const layer = doc.createLayerObject({
+        id: lSnap.id,
+        name: lSnap.name,
+        kind: lSnap.kind || 'raster',
+        visible: lSnap.visible !== false,
+        opacity: lSnap.opacity ?? 1,
+        fill: lSnap.fill ?? 1,
+        blendMode: lSnap.blendMode || 'source-over',
+        locked: Boolean(lSnap.locked),
+        clipping: Boolean(lSnap.clipping),
+        sourceCanvas: srcCanvas,
+        maskCanvas,
+        maskEnabled: lSnap.maskEnabled !== false,
+        adjustment: lSnap.adjustment,
+        textData: lSnap.textData,
+        shapeData: lSnap.shapeData,
+        styles: lSnap.styles
+      });
+      doc.layers.push(layer);
+    }
+
+    if (doc.layers.length === 0) return null;
+    doc.activeLayerId =
+      doc.layers.find((l) => l.id === snapshot.activeLayerId)?.id || doc.layers[doc.layers.length - 1].id;
+    doc.editingMask = Boolean(snapshot.editingMask && doc.activeLayer?.maskCanvas);
+    doc.compose();
+    doc.pushHistory(`Restored ${doc.title}`);
+    return doc;
+  }
+
+  async restoreAutoSavedProject(force = false) {
+    if (!force && this._userCreatedOrOpenedDoc) return false;
+    let snapshot = null;
+
+    try {
+      const db = await this.openAutoSaveDB();
+      snapshot = await new Promise((resolve) => {
+        const tx = db.transaction('projects', 'readonly');
+        const req = tx.objectStore('projects').get('current_active_project');
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      });
+    } catch (_) {}
+
+    if (!snapshot) {
+      try {
+        const raw = localStorage.getItem('prostudio_autosave_fallback_v1');
+        if (raw) snapshot = JSON.parse(raw);
+      } catch (_) {}
+    }
+
+    if (!snapshot || (!force && this._userCreatedOrOpenedDoc)) return false;
+
+    const doc = await this.deserializeProjectSnapshot(snapshot);
+    if (!doc || (!force && this._userCreatedOrOpenedDoc)) return false;
+
+    if (snapshot.fgColor) this.fgColor = snapshot.fgColor;
+    if (snapshot.bgColor) this.bgColor = snapshot.bgColor;
+    if (snapshot.typeSettings) {
+      this.typeSettings = { ...this.typeSettings, ...snapshot.typeSettings };
+    }
+    this.syncColorSwatches();
+    this.loadDocument(doc, false);
+    this.newDocScreen?.close();
+    this.setAutoSaveBadgeState(false);
+    this.showToast(`✓ Restored saved work: ${doc.title} (${doc.layers.length} layer${doc.layers.length !== 1 ? 's' : ''})`);
+    return true;
   }
 
   openNewDocumentModal() {
@@ -5952,7 +6496,9 @@ class ProStudioMobileApp {
         create.className = 'pill-action-btn';
         create.textContent = 'Create Canvas';
         create.addEventListener('click', () => {
-          this.loadDocument(SampleProjects.createBlankDocument(width, height, bg, title));
+          this._userCreatedOrOpenedDoc = true;
+          this._initialLoadComplete = true;
+          this.loadDocument(SampleProjects.createBlankDocument(width, height, bg, title), true);
           this.closeModal();
           this.closeSheet();
           this.showToast(`Created ${width}×${height} canvas`);
@@ -6029,8 +6575,12 @@ class ProStudioMobileApp {
   }
 
   hapticTick() {
-    if (window.ProStudioAndroid && typeof window.ProStudioAndroid.hapticTick === 'function') {
-      window.ProStudioAndroid.hapticTick();
+    if (window.ProStudioAndroid) {
+      if (typeof window.ProStudioAndroid.hapticTick === 'function') {
+        window.ProStudioAndroid.hapticTick();
+      } else if (typeof window.ProStudioAndroid.vibrate === 'function') {
+        window.ProStudioAndroid.vibrate(8);
+      }
     } else if (navigator.vibrate) {
       navigator.vibrate(8);
     }

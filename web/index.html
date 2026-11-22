@@ -58,7 +58,10 @@
                 <span class="doc-title" id="doc-title-label">Ocean-Wave-Poster.psd</span>
                 <span style="font-size:10px;color:var(--pc-text-dim);">▾</span>
               </div>
-              <span class="doc-meta" id="doc-dimensions-label">900 × 1120 px · 6 layers</span>
+              <div style="display:flex;align-items:center;gap:5px;">
+                <span class="doc-meta" id="doc-dimensions-label">900 × 1120 · 6L</span>
+                <span class="autosave-badge" id="autosave-status-badge" title="All changes are automatically saved on your device">✓ Saved</span>
+              </div>
             </div>
           </div>
           <!-- File Dropdown Menu -->
@@ -73,10 +76,18 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13"/></svg>
           </button>
 
+          <!-- Dedicated Import from Phone Dropdown Menu -->
+          <div class="dropdown-anchor">
+            <button type="button" class="pill-action-btn secondary" id="btn-import-dropdown" title="Import Photo, PSD, Camera or Font from Phone">
+              Import ▾
+            </button>
+            <div class="dropdown-popover down-right" id="popover-import-menu" hidden></div>
+          </div>
+
           <!-- Select Dropdown Menu -->
           <div class="dropdown-anchor">
             <button type="button" class="pill-action-btn secondary" id="btn-select-dropdown" title="Select ➔ Subject &amp; Selection Menu">
-              ✨ Select ▾
+              Select ▾
             </button>
             <div class="dropdown-popover down-right" id="popover-select-menu" hidden></div>
           </div>
@@ -360,10 +371,12 @@
       <!-- Toast Notifications -->
       <div class="toast-container" id="toast-container"></div>
 
-      <!-- Hidden File Inputs for Open Document, Place Layer Image, and Import Downloaded Fonts -->
-      <input type="file" id="file-input-open" accept=".psd,image/png,image/jpeg,image/webp,image/gif" hidden />
-      <input type="file" id="file-input-place-layer" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
-      <input type="file" id="file-input-font" accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2,application/x-font-ttf,application/x-font-opentype" multiple hidden />
+      <!-- Hidden File Inputs for Phone Gallery/Photos, Camera, Open PSD/Project, and Import Downloaded Fonts -->
+      <input type="file" id="file-input-open" accept="image/*,.psd,.psb,.psproj,.json" hidden />
+      <input type="file" id="file-input-phone-photo-open" accept="image/*" hidden />
+      <input type="file" id="file-input-place-layer" accept="image/*" multiple hidden />
+      <input type="file" id="file-input-phone-camera" accept="image/*" capture="environment" hidden />
+      <input type="file" id="file-input-font" accept=".ttf,.otf,.woff,.woff2,font/*,application/octet-stream,*/*" multiple hidden />
     </main>
   </div>
 

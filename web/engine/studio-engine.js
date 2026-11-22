@@ -104,10 +104,12 @@ export class StudioDoc {
       layer.maskEnabled = opts.maskEnabled !== false;
     }
 
-    if (layer.kind === 'text' && layer.textData) {
-      this.rasterizeTextLayer(layer);
-    } else if (layer.kind === 'shape' && layer.shapeData) {
-      this.rasterizeShapeLayer(layer);
+    if (!opts.sourceCanvas) {
+      if (layer.kind === 'text' && layer.textData) {
+        this.rasterizeTextLayer(layer);
+      } else if (layer.kind === 'shape' && layer.shapeData) {
+        this.rasterizeShapeLayer(layer);
+      }
     }
 
     return layer;
@@ -1344,6 +1346,10 @@ export class StudioSession {
       this.doc.pushHistory('Clear Pixels');
     });
 
+    this.registerCommand('layer.flatten', 'Flatten Image', 'Layer', () => {
+      this.dispatch('layer.flattenImage');
+    });
+
     this.registerCommand('transform.flipHorizontal', 'Flip Layer Horizontal', 'Transform', () => {
       if (!this.doc || !this.doc.activeLayer) return;
       const layer = this.doc.activeLayer;
@@ -1357,6 +1363,12 @@ export class StudioSession {
       const ctx = layer.canvas.getContext('2d');
       ctx.clearRect(0, 0, this.doc.width, this.doc.height);
       ctx.drawImage(temp, 0, 0);
+      if (layer.textData && typeof layer.textData.x === 'number') {
+        layer.textData.x = this.doc.width - layer.textData.x;
+      }
+      if (layer.shapeData && typeof layer.shapeData.x === 'number') {
+        layer.shapeData.x = this.doc.width - (layer.shapeData.x + (layer.shapeData.w || 0));
+      }
       this.doc.pushHistory('Flip Horizontal');
     });
 
@@ -1373,6 +1385,12 @@ export class StudioSession {
       const ctx = layer.canvas.getContext('2d');
       ctx.clearRect(0, 0, this.doc.width, this.doc.height);
       ctx.drawImage(temp, 0, 0);
+      if (layer.textData && typeof layer.textData.y === 'number') {
+        layer.textData.y = this.doc.height - layer.textData.y;
+      }
+      if (layer.shapeData && typeof layer.shapeData.y === 'number') {
+        layer.shapeData.y = this.doc.height - (layer.shapeData.y + (layer.shapeData.h || 0));
+      }
       this.doc.pushHistory('Flip Vertical');
     });
 
@@ -1399,6 +1417,22 @@ export class StudioSession {
         };
         lyr.canvas = rot(lyr.canvas);
         if (lyr.maskCanvas) lyr.maskCanvas = rot(lyr.maskCanvas);
+        if (lyr.textData) {
+          const tx = lyr.textData.x ?? oldW / 2;
+          const ty = lyr.textData.y ?? oldH / 2;
+          lyr.textData.x = oldH - ty;
+          lyr.textData.y = tx;
+        }
+        if (lyr.shapeData) {
+          const sx = lyr.shapeData.x ?? 0;
+          const sy = lyr.shapeData.y ?? 0;
+          const sw = lyr.shapeData.w ?? 100;
+          const sh = lyr.shapeData.h ?? 100;
+          lyr.shapeData.x = oldH - (sy + sh);
+          lyr.shapeData.y = sx;
+          lyr.shapeData.w = sh;
+          lyr.shapeData.h = sw;
+        }
       }
       this.doc.clearSelection();
       this.doc.pushHistory('Rotate 90° CW');

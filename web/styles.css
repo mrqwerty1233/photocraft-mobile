@@ -301,7 +301,7 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 8px;
+  padding: 0 6px;
   gap: 4px;
   z-index: 70;
 }
@@ -309,10 +309,11 @@ html, body {
 .brand-cluster {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 5px;
   min-width: 0;
+  max-width: 148px;
   cursor: pointer;
-  padding: 4px 5px;
+  padding: 2px 3px;
   border-radius: var(--pc-radius-sm);
 }
 
@@ -321,9 +322,9 @@ html, body {
 }
 
 .brand-icon {
-  width: 25px;
-  height: 25px;
-  border-radius: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
   flex-shrink: 0;
   object-fit: contain;
 }
@@ -332,29 +333,64 @@ html, body {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  overflow: hidden;
 }
 
 .doc-title {
-  font-size: 12.5px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--pc-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 112px;
+  max-width: 102px;
 }
 
 .doc-meta {
-  font-size: 9.5px;
+  font-size: 8.5px;
   font-family: var(--pc-font-mono);
   color: var(--pc-text-dim);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.autosave-badge {
+  font-size: 8px;
+  font-weight: 700;
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.14);
+  border: 1px solid rgba(74, 222, 128, 0.35);
+  border-radius: 3px;
+  padding: 0 3px;
+  line-height: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.autosave-badge.saving {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.15);
+  border-color: rgba(251, 191, 36, 0.38);
 }
 
 .top-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.top-actions .icon-btn {
+  width: 24px;
+  height: 26px;
+}
+
+.top-actions .pill-action-btn {
+  height: 26px;
+  padding: 0 5px;
+  font-size: 10px;
+  gap: 2px;
 }
 
 .icon-btn {
@@ -384,8 +420,8 @@ html, body {
 }
 
 .icon-btn svg {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
   stroke-width: 1.9;
 }
 
@@ -2707,7 +2743,8 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  padding: 7px 10px;
+  gap: 6px;
   background: #1b1c20;
   border-bottom: 1px solid #363840;
   flex-shrink: 0;
@@ -2716,15 +2753,24 @@ html, body {
 .nd-titlebar-left {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
+  gap: 6px;
+  font-size: 12.5px;
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .nd-titlebar-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.nd-titlebar-actions .ps-fx-btn {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .nd-cat-tabs {
