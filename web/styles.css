@@ -1623,3 +1623,641 @@ html, body {
   font-size: 10.5px;
   color: var(--pc-text-dim);
 }
+
+/* ============================================================================
+ * Adobe Photoshop-Exact Layer Style (fx) Dialog & Layers Panel Effects Tree
+ * ============================================================================ */
+.modal-card.ps-fx-modal-card {
+  max-width: 680px;
+  width: 100%;
+  max-height: 92%;
+  background: #2b2c30;
+  border: 1px solid #44474e;
+}
+
+.modal-card.ps-fx-modal-card .modal-header {
+  padding: 8px 12px;
+  background: #232428;
+  border-bottom: 1px solid #3c3e45;
+}
+
+.modal-card.ps-fx-modal-card .modal-header h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e6e7ea;
+}
+
+.modal-card.ps-fx-modal-card .modal-body {
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Top Photoshop Action Strip (Preview Box, Preview Toggle, New Style, Cancel, OK) */
+.ps-fx-top-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #25262a;
+  border-bottom: 1px solid #3a3c43;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.ps-fx-preview-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ps-fx-preview-canvas {
+  width: 44px;
+  height: 44px;
+  border-radius: 5px;
+  border: 1px solid #4f525b;
+  background: #383a3f;
+  flex-shrink: 0;
+}
+
+.ps-fx-top-btns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ps-fx-btn {
+  padding: 5px 10px;
+  border-radius: 99px;
+  border: 1px solid #555861;
+  background: #35373d;
+  color: #e8e9ec;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.ps-fx-btn:hover {
+  background: #42454d;
+  border-color: #707480;
+}
+
+.ps-fx-btn.primary {
+  background: #1473e6;
+  border-color: #2b86f6;
+  color: #ffffff;
+  font-weight: 600;
+  padding: 5px 14px;
+}
+
+.ps-fx-btn.primary:hover {
+  background: #2680eb;
+}
+
+.ps-fx-new-style-bar {
+  padding: 7px 10px;
+  background: #1f2126;
+  border-bottom: 1px solid #3a3c43;
+}
+
+.ps-fx-new-style-bar[hidden] {
+  display: none !important;
+}
+
+.ps-fx-text-in {
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid #4c4f59;
+  background: #1a1b1f;
+  color: #f3f4f6;
+  font-size: 11.5px;
+}
+
+/* Main 2-Column Photoshop Split */
+.ps-fx-split {
+  display: flex;
+  flex: 1;
+  min-height: 360px;
+  max-height: 68vh;
+  overflow: hidden;
+}
+
+.ps-fx-sidebar {
+  width: 146px;
+  flex-shrink: 0;
+  background: #222327;
+  border-right: 1px solid #3a3c43;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ps-fx-tree {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.ps-fx-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 5px 5px 6px;
+  font-size: 10.5px;
+  color: #d0d3da;
+  cursor: pointer;
+  user-select: none;
+  border-left: 2px solid transparent;
+}
+
+.ps-fx-tree-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.ps-fx-tree-row.active {
+  background: #3a3e48;
+  color: #ffffff;
+  font-weight: 600;
+  border-left-color: #2680eb;
+}
+
+.ps-fx-tree-row.indent {
+  padding-left: 18px;
+  font-size: 10.5px;
+  color: #b4b8c2;
+}
+
+.ps-fx-tree-cb {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: #2680eb;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.ps-fx-tree-lbl {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ps-fx-plus-btn {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  border: 1px solid #52555f;
+  background: #2d2f36;
+  color: #d6d9e0;
+  font-size: 11px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.ps-fx-plus-btn:hover {
+  background: #2680eb;
+  border-color: #3b82f6;
+  color: #ffffff;
+}
+
+.ps-fx-tree-sep {
+  height: 1px;
+  background: #373941;
+  margin: 3px 8px;
+}
+
+.ps-fx-tree-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 6px;
+  background: #1c1d21;
+  border-top: 1px solid #373941;
+  flex-shrink: 0;
+}
+
+.ps-fx-mini-btn {
+  height: 22px;
+  min-width: 22px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid #454852;
+  background: #2b2d34;
+  color: #d1d5db;
+  font-size: 10.5px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ps-fx-mini-btn:hover,
+.ps-fx-mini-btn.active {
+  background: #2680eb;
+  border-color: #3b82f6;
+  color: #ffffff;
+}
+
+/* Right Photoshop Controls Pane */
+.ps-fx-pane {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 8px 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: #2d2e33;
+}
+
+.ps-fx-sec-heading {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #f3f4f6;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #40434c;
+}
+
+.ps-fx-fieldset {
+  background: #27282c;
+  border: 1px solid #3c3e46;
+  border-radius: 6px;
+  padding: 7px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ps-fx-legend {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 1px;
+}
+
+.ps-fx-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ps-fx-col {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ps-fx-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ps-fx-lbl {
+  font-size: 10.5px;
+  color: #cfd3db;
+  min-width: 50px;
+  flex-shrink: 0;
+}
+
+.ps-fx-select {
+  flex: 1;
+  min-width: 82px;
+  height: 25px;
+  padding: 0 4px;
+  border-radius: 4px;
+  border: 1px solid #4b4e58;
+  background: #1f2024;
+  color: #f3f4f6;
+  font-size: 10.5px;
+}
+
+.ps-fx-range {
+  flex: 1;
+  min-width: 44px;
+}
+
+.ps-fx-num {
+  width: 40px;
+  height: 23px;
+  padding: 0 3px;
+  border-radius: 4px;
+  border: 1px solid #4b4e58;
+  background: #1c1d21;
+  color: #f3f4f6;
+  font-size: 10.5px;
+  font-family: var(--pc-font-mono);
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.ps-fx-unit {
+  font-size: 10.5px;
+  color: #9ca3af;
+  min-width: 14px;
+  flex-shrink: 0;
+}
+
+.ps-fx-swatch {
+  width: 28px;
+  height: 24px;
+  padding: 1px;
+  border-radius: 4px;
+  border: 1px solid #5c606d;
+  background: #1c1d21;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.ps-fx-check,
+.ps-fx-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #d6d9e0;
+  cursor: pointer;
+}
+
+.ps-fx-check input,
+.ps-fx-radio input {
+  margin: 0;
+  accent-color: #2680eb;
+  cursor: pointer;
+}
+
+/* Angle & Altitude Interactive Dial */
+.ps-fx-angle-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.ps-fx-dial {
+  width: 44px;
+  height: 44px;
+  cursor: grab;
+  touch-action: none;
+  flex-shrink: 0;
+}
+
+.ps-fx-dial:active {
+  cursor: grabbing;
+}
+
+.ps-fx-angle-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Contour Curve Dropdown Picker */
+.ps-fx-contour-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  border: 1px solid #525663;
+  background: #1d1e22;
+  color: #d1d5db;
+  cursor: pointer;
+}
+
+.ps-fx-contour-btn canvas {
+  display: block;
+  border-radius: 2px;
+}
+
+.ps-fx-contour-pop {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 40;
+  margin-top: 4px;
+  padding: 6px;
+  width: 224px;
+  background: #1f2025;
+  border: 1px solid #4e525f;
+  border-radius: 7px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.7);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+}
+
+.ps-fx-contour-pop[hidden] {
+  display: none !important;
+}
+
+.ps-fx-contour-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 4px;
+  border: 1px solid #3c3f49;
+  background: #272930;
+  color: #d1d5db;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.ps-fx-contour-cell:hover,
+.ps-fx-contour-cell.active {
+  border-color: #2680eb;
+  background: #2e384b;
+}
+
+/* Gradient Bar & Editor */
+.ps-fx-grad-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ps-fx-grad-bar {
+  width: 100%;
+  height: 20px;
+  border-radius: 4px;
+  border: 1px solid #585c69;
+  display: block;
+}
+
+/* Blend If Luminance Bar */
+.ps-fx-blendif-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px 6px;
+  border-radius: 5px;
+  background: #212226;
+  border: 1px solid #383a42;
+}
+
+.ps-fx-blendif-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 10.5px;
+  color: #d1d5db;
+}
+
+.ps-fx-blendif-grad {
+  height: 10px;
+  border-radius: 3px;
+  border: 1px solid #525560;
+}
+
+/* Make Default / Reset to Default Row */
+.ps-fx-defaults-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+/* Styles Preset Gallery Grid */
+.ps-fx-hint {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.ps-fx-styles-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 7px;
+}
+
+.ps-fx-style-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 6px;
+  border-radius: 6px;
+  border: 1px solid #40434d;
+  background: #222328;
+  cursor: pointer;
+  text-align: center;
+}
+
+.ps-fx-style-tile:hover {
+  border-color: #2680eb;
+  background: #2b303d;
+}
+
+.ps-fx-style-tile canvas {
+  width: 56px;
+  height: 56px;
+  border-radius: 5px;
+  border: 1px solid #4a4d57;
+}
+
+.ps-fx-style-tile span {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: #e5e7eb;
+}
+
+.ps-fx-tile-del {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(239, 68, 68, 0.85);
+  color: #fff;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+/* Layers Panel Expandable "Effects" Sub-Tree (Matches Photoshop Layers Panel!) */
+.layer-fx-subtree {
+  margin: -3px 0 6px 22px;
+  padding: 3px 6px 4px;
+  border-left: 2px solid rgba(55, 142, 240, 0.45);
+  background: rgba(20, 22, 27, 0.65);
+  border-radius: 0 6px 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.layer-fx-subrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.layer-fx-subrow.child {
+  padding-left: 16px;
+}
+
+.layer-fx-subrow.muted {
+  opacity: 0.45;
+}
+
+.layer-vis-btn.small {
+  width: 22px;
+  height: 22px;
+}
+
+.layer-fx-expand-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: transparent;
+  border: none;
+  color: #93c5fd;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.layer-fx-item-btn {
+  flex: 1;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: #d4d7df;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+.layer-fx-item-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}

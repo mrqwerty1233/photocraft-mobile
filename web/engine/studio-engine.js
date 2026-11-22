@@ -4,28 +4,12 @@
  * ============================================================================ */
 
 import { Algorithms } from './algorithms.js';
+import { LayerStylesEngine, PHOTOSHOP_BLEND_MODES } from './layer-styles-engine.js';
 
 let NEXT_LAYER_ID = 1;
 let NEXT_SLICE_ID = 1;
 
-export const BLEND_MODES = [
-  { id: 'source-over', label: 'Normal' },
-  { id: 'multiply', label: 'Multiply' },
-  { id: 'screen', label: 'Screen' },
-  { id: 'overlay', label: 'Overlay' },
-  { id: 'darken', label: 'Darken' },
-  { id: 'lighten', label: 'Lighten' },
-  { id: 'color-dodge', label: 'Color Dodge' },
-  { id: 'color-burn', label: 'Color Burn' },
-  { id: 'hard-light', label: 'Hard Light' },
-  { id: 'soft-light', label: 'Soft Light' },
-  { id: 'difference', label: 'Difference' },
-  { id: 'exclusion', label: 'Exclusion' },
-  { id: 'hue', label: 'Hue' },
-  { id: 'saturation', label: 'Saturation' },
-  { id: 'color', label: 'Color' },
-  { id: 'luminosity', label: 'Luminosity' }
-];
+export const BLEND_MODES = PHOTOSHOP_BLEND_MODES;
 
 export class StudioDoc {
   constructor(width = 1080, height = 1080, title = 'Untitled-1.psd') {
@@ -35,6 +19,9 @@ export class StudioDoc {
     this.layers = []; // bottom-to-top
     this.activeLayerId = null;
     this.editingMask = false;
+
+    // Document-wide Photoshop Global Light (synced across Bevel & Emboss, Inner Shadow, Drop Shadow)
+    this.globalLight = { angle: 120, altitude: 30 };
 
     // Selection state
     this.hasSelection = false;
@@ -77,18 +64,7 @@ export class StudioDoc {
   }
 
   normalizeLayerStyles(rawStyles) {
-    const def = Algorithms.createDefaultLayerStyles();
-    if (!rawStyles) return def;
-    const merged = structuredClone(def);
-    for (const key of Object.keys(def)) {
-      if (rawStyles[key]) {
-        merged[key] = { ...def[key], ...structuredClone(rawStyles[key]) };
-        if (key === 'dropShadow' && rawStyles.dropShadow.blur !== undefined && rawStyles.dropShadow.size === undefined) {
-          merged.dropShadow.size = rawStyles.dropShadow.blur;
-        }
-      }
-    }
-    return merged;
+    return LayerStylesEngine.normalizeLayerStyles(rawStyles);
   }
 
   createLayerObject(opts = {}) {
@@ -343,12 +319,12 @@ export class StudioDoc {
       srcCanvas = temp;
     }
 
-    if (layer.maskCanvas && layer.maskEnabled) {
+    const applyLayerMaskToCanvas = (canvasToMask) => {
       const masked = document.createElement('canvas');
       masked.width = this.width;
       masked.height = this.height;
       const mCtx = masked.getContext('2d');
-      mCtx.drawImage(srcCanvas, 0, 0);
+      mCtx.drawImage(canvasToMask, 0, 0);
 
       const layerData = mCtx.getImageData(0, 0, this.width, this.height);
       const maskData = layer.maskCanvas.getContext('2d').getImageData(0, 0, this.width, this.height).data;
@@ -359,20 +335,40 @@ export class StudioDoc {
         dst[i + 3] = Math.round(dst[i + 3] * (maskLum / 255) * maskAlpha);
       }
       mCtx.putImageData(layerData, 0, 0);
-      srcCanvas = masked;
+      return masked;
+    };
+
+    const maskHidesEffects = Boolean(layer.styles?.blendOptions?.layerMaskHidesEffects);
+    const hasMask = Boolean(layer.maskCanvas && layer.maskEnabled);
+    const hasFx = Algorithms.hasActiveLayerEffects(layer.styles);
+
+    if (hasMask && !maskHidesEffects) {
+      srcCanvas = applyLayerMaskToCanvas(srcCanvas);
     }
 
     // Fast path when no layer effects are active
-    if (!Algorithms.hasActiveLayerEffects(layer.styles)) {
-      destCtx.save();
-      destCtx.globalCompositeOperation = layer.blendMode || 'source-over';
-      destCtx.globalAlpha = Math.max(0, Math.min(1, (layer.opacity ?? 1) * (layer.fill ?? 1)));
-      destCtx.drawImage(srcCanvas, 0, 0);
-      destCtx.restore();
+    if (!hasFx) {
+      if (hasMask && maskHidesEffects) {
+        srcCanvas = applyLayerMaskToCanvas(srcCanvas);
+      }
+      const alpha = Math.max(0, Math.min(1, (layer.opacity ?? 1) * (layer.fill ?? 1)));
+      LayerStylesEngine.compositeCanvas(destCtx, srcCanvas, layer.blendMode || 'source-over', alpha);
       return;
     }
 
-    Algorithms.renderLayerWithEffects(layer, destCtx, srcCanvas, this.width, this.height);
+    if (hasMask && maskHidesEffects) {
+      // Photoshop "Layer Mask Hides Effects": render effects first, then clip entire result by mask
+      const fxBuf = document.createElement('canvas');
+      fxBuf.width = this.width;
+      fxBuf.height = this.height;
+      const fxCtx = fxBuf.getContext('2d');
+      LayerStylesEngine.renderLayerWithEffects(layer, fxCtx, srcCanvas, this.width, this.height, this.globalLight);
+      const clipped = applyLayerMaskToCanvas(fxBuf);
+      destCtx.drawImage(clipped, 0, 0);
+      return;
+    }
+
+    LayerStylesEngine.renderLayerWithEffects(layer, destCtx, srcCanvas, this.width, this.height, this.globalLight);
   }
 
   /**
@@ -938,6 +934,7 @@ export class StudioDoc {
       height: this.height,
       activeLayerId: this.activeLayerId,
       editingMask: this.editingMask,
+      globalLight: structuredClone(this.globalLight),
       slices: structuredClone(this.slices),
       selectedSliceId: this.selectedSliceId,
       layers: this.layers.map((l) => {
@@ -991,6 +988,7 @@ export class StudioDoc {
     this.compositeCanvas.height = snap.height;
     this.activeLayerId = snap.activeLayerId;
     this.editingMask = snap.editingMask;
+    this.globalLight = snap.globalLight ? structuredClone(snap.globalLight) : { angle: 120, altitude: 30 };
     this.slices = snap.slices ? structuredClone(snap.slices) : [];
     this.selectedSliceId = snap.selectedSliceId || null;
 

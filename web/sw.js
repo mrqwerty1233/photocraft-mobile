@@ -1,4 +1,4 @@
-const CACHE_NAME = 'prostudio-mobile-v2';
+const CACHE_NAME = 'prostudio-mobile-v3';
 const ASSETS = [
   './',
   './index.html',
@@ -6,10 +6,12 @@ const ASSETS = [
   './app.js',
   './manifest.json',
   './engine/algorithms.js',
+  './engine/layer-styles-engine.js',
   './engine/brush-engine.js',
   './engine/psd-codec.js',
   './engine/studio-engine.js',
   './engine/sample-projects.js',
+  './ui/layer-style-dialog.js',
   './assets/icons/logo.svg',
   './assets/icons/icon-128.png',
   './assets/icons/icon-256.png',

@@ -5,10 +5,12 @@
  * ============================================================================ */
 
 import { Algorithms } from './engine/algorithms.js';
+import { LayerStylesEngine, STACKABLE_EFFECT_KEYS } from './engine/layer-styles-engine.js';
 import { PsdCodec } from './engine/psd-codec.js';
 import { BrushEngine, BRUSH_PRESETS } from './engine/brush-engine.js';
 import { StudioDoc, StudioSession, BLEND_MODES } from './engine/studio-engine.js';
 import { SampleProjects } from './engine/sample-projects.js';
+import { PhotoshopLayerStyleDialog } from './ui/layer-style-dialog.js';
 
 const PRESET_SWATCHES = [
   '#378ef0', '#1d68c4', '#2ec4b6', '#38c172', '#f59e0b', '#ec5b62', '#e11d48', '#ffffff',
@@ -161,6 +163,8 @@ class ProStudioMobileApp {
     this.panX = 0;
     this.panY = 0;
     this.renderPending = false;
+    this._modalCancelHook = null;
+    this.layerStyleDialog = new PhotoshopLayerStyleDialog(this);
 
     // Active Panel Sheet ('none' | 'layers' | 'adjustments' | 'filters' | 'project')
     this.activeSheet = 'none';
@@ -517,26 +521,39 @@ class ProStudioMobileApp {
 
   populateFxDropdown() {
     const menu = document.getElementById('popover-fx-menu');
-    const fx = this.session.doc?.activeLayer?.styles || {};
-    menu.innerHTML = `<div class="dropdown-section-label">Blending Options &amp; Layer Styles</div>`;
+    const fx = LayerStylesEngine.normalizeLayerStyles(this.session.doc?.activeLayer?.styles);
+    menu.innerHTML = `<div class="dropdown-section-label">Layer Style (fx)</div>`;
 
     const items = [
       { id: 'blendingOptions', label: '⚙ Blending Options...' },
-      { id: 'stroke', label: '▢ Stroke Outline...', key: 'stroke' },
+      { id: 'bevelEmboss', label: '⛰ Bevel & Emboss...', key: 'bevelEmboss' },
+      { id: 'stroke', label: '▢ Stroke...', key: 'stroke' },
+      { id: 'innerShadow', label: '🌒 Inner Shadow...', key: 'innerShadow' },
+      { id: 'innerGlow', label: '🌟 Inner Glow...', key: 'innerGlow' },
+      { id: 'satin', label: '〰 Satin...', key: 'satin' },
       { id: 'colorOverlay', label: '🎨 Color Overlay...', key: 'colorOverlay' },
       { id: 'gradientOverlay', label: '🌈 Gradient Overlay...', key: 'gradientOverlay' },
-      { id: 'dropShadow', label: '🌑 Drop Shadow...', key: 'dropShadow' },
-      { id: 'innerShadow', label: '🌒 Inner Shadow...', key: 'innerShadow' },
+      { id: 'patternOverlay', label: '🏁 Pattern Overlay...', key: 'patternOverlay' },
       { id: 'outerGlow', label: '✨ Outer Glow...', key: 'outerGlow' },
-      { id: 'innerGlow', label: '🌟 Inner Glow...', key: 'innerGlow' },
-      { id: 'bevelEmboss', label: '⛰ Bevel & Emboss...', key: 'bevelEmboss' },
-      { id: 'satin', label: '〰 Satin Contour...', key: 'satin' },
-      { id: 'patternOverlay', label: '🏁 Pattern Overlay...', key: 'patternOverlay' }
+      { id: 'dropShadow', label: '🌑 Drop Shadow...', key: 'dropShadow' },
+      { id: 'styles', label: '★ Styles Presets Gallery...' }
     ];
 
     for (const it of items) {
-      const enabled = it.key && Boolean(fx[it.key]?.enabled);
-      this.addDropdownMenuItem(menu, it.label, enabled ? 'ON' : '', enabled, () => {
+      let enabled = false;
+      let badge = '';
+      if (it.key) {
+        const plural = STACKABLE_EFFECT_KEYS[it.key];
+        if (plural) {
+          const cnt = (fx[plural] || []).filter((e) => e.enabled).length;
+          enabled = cnt > 0;
+          badge = cnt > 1 ? `ON (${cnt})` : cnt === 1 ? 'ON' : '';
+        } else {
+          enabled = Boolean(fx[it.key]?.enabled);
+          badge = enabled ? 'ON' : '';
+        }
+      }
+      this.addDropdownMenuItem(menu, it.label, badge, enabled, () => {
         this.openLayerStylesModal(it.id);
       });
     }
@@ -553,7 +570,7 @@ class ProStudioMobileApp {
       this.session.dispatch('layer.pasteStyle');
       this.showToast('Pasted Layer Style');
     });
-    this.addDropdownMenuItem(menu, '🗑 Clear All Layer Styles', '', false, () => {
+    this.addDropdownMenuItem(menu, '🗑 Clear Layer Style', '', false, () => {
       this.session.dispatch('layer.clearStyle');
       this.showToast('Cleared Layer Styles');
     });
@@ -2940,6 +2957,83 @@ class ProStudioMobileApp {
       });
 
       list.appendChild(row);
+
+      // Photoshop-exact expandable "Effects" sub-tree under each layer with active styles
+      const activeFxEntries = LayerStylesEngine.listActiveEffectEntries(lyr.styles);
+      if (activeFxEntries.length > 0 && lyr.kind !== 'adjustment') {
+        lyr.styles = LayerStylesEngine.normalizeLayerStyles(lyr.styles);
+        const fxTree = document.createElement('div');
+        fxTree.className = 'layer-fx-subtree';
+
+        const fxHeader = document.createElement('div');
+        fxHeader.className = 'layer-fx-subrow master';
+        const eyeSvg = (on) =>
+          on
+            ? `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`
+            : `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+
+        const masterEye = document.createElement('button');
+        masterEye.type = 'button';
+        masterEye.className = `layer-vis-btn small${lyr.styles.effectsVisible ? '' : ' hidden-layer'}`;
+        masterEye.title = 'Toggle All Layer Effects Visibility';
+        masterEye.innerHTML = eyeSvg(lyr.styles.effectsVisible);
+        masterEye.addEventListener('click', (e) => {
+          e.stopPropagation();
+          lyr.styles.effectsVisible = !lyr.styles.effectsVisible;
+          doc.pushHistory('Toggle Layer Effects');
+          this.session.notify('layer.styles');
+        });
+
+        const expBtn = document.createElement('button');
+        expBtn.type = 'button';
+        expBtn.className = 'layer-fx-expand-btn';
+        expBtn.innerHTML = `<span>Effects (${activeFxEntries.length})</span><span>${lyr.styles.effectsExpanded !== false ? '▾' : '▸'}</span>`;
+        expBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          lyr.styles.effectsExpanded = lyr.styles.effectsExpanded === false;
+          this.renderLayersSheet();
+        });
+
+        fxHeader.appendChild(masterEye);
+        fxHeader.appendChild(expBtn);
+        fxTree.appendChild(fxHeader);
+
+        if (lyr.styles.effectsExpanded !== false) {
+          for (const entry of activeFxEntries) {
+            const sub = document.createElement('div');
+            sub.className = `layer-fx-subrow child${lyr.styles.effectsVisible ? '' : ' muted'}`;
+
+            const subEye = document.createElement('button');
+            subEye.type = 'button';
+            subEye.className = `layer-vis-btn small${entry.instance.enabled ? '' : ' hidden-layer'}`;
+            subEye.title = `Disable ${entry.label}`;
+            subEye.innerHTML = eyeSvg(entry.instance.enabled && lyr.styles.effectsVisible);
+            subEye.addEventListener('click', (e) => {
+              e.stopPropagation();
+              entry.instance.enabled = !entry.instance.enabled;
+              doc.pushHistory(`Toggle ${entry.label}`);
+              this.session.notify('layer.styles');
+            });
+
+            const subLbl = document.createElement('button');
+            subLbl.type = 'button';
+            subLbl.className = 'layer-fx-item-btn';
+            subLbl.textContent = entry.label;
+            subLbl.title = `Edit ${entry.label} in Layer Style Dialog`;
+            subLbl.addEventListener('click', (e) => {
+              e.stopPropagation();
+              doc.activeLayerId = lyr.id;
+              this.openLayerStylesModal(entry.type, entry.index);
+            });
+
+            sub.appendChild(subEye);
+            sub.appendChild(subLbl);
+            fxTree.appendChild(sub);
+          }
+        }
+
+        list.appendChild(fxTree);
+      }
     }
 
     body.appendChild(list);
@@ -3805,10 +3899,14 @@ class ProStudioMobileApp {
    * Export As with Storage Permission & File Location Option
    * ========================================================================== */
   openModal(title, renderBodyFn, renderFooterFn) {
+    this._modalCancelHook = null;
     const overlay = document.getElementById('modal-overlay');
+    const card = document.getElementById('modal-card');
+    card.classList.remove('ps-fx-modal-card');
     document.getElementById('modal-title').textContent = title;
     const body = document.getElementById('modal-body');
     const footer = document.getElementById('modal-footer');
+    footer.style.display = '';
     body.innerHTML = '';
     footer.innerHTML = '';
     renderBodyFn(body);
@@ -3817,6 +3915,15 @@ class ProStudioMobileApp {
   }
 
   closeModal() {
+    if (typeof this._modalCancelHook === 'function') {
+      const hook = this._modalCancelHook;
+      this._modalCancelHook = null;
+      hook();
+      return;
+    }
+    document.getElementById('modal-card')?.classList.remove('ps-fx-modal-card');
+    const footer = document.getElementById('modal-footer');
+    if (footer) footer.style.display = '';
     document.getElementById('modal-overlay').hidden = true;
   }
 
@@ -4004,494 +4111,10 @@ class ProStudioMobileApp {
   }
 
   /**
-   * Complete Blending Options & Layer Styles Dialog (fx)
-   * Uses a clean Dropdown Menu for switching between the 11 style sections!
+   * Complete Adobe Photoshop-Exact Layer Style Dialog (fx)
    */
-  openLayerStylesModal(initialSection = 'blendingOptions') {
-    const doc = this.session.doc;
-    const layer = doc?.activeLayer;
-    if (!doc || !layer || layer.kind === 'adjustment') {
-      this.showToast('Select a pixel, type, or shape layer to edit Blending Options & Styles');
-      return;
-    }
-
-    layer.styles = doc.normalizeLayerStyles(layer.styles);
-    const fx = layer.styles;
-    let activeTab = initialSection || 'blendingOptions';
-
-    const TABS = [
-      { id: 'blendingOptions', label: '⚙ Blending Options (Mode, Fill Opacity, Blend If)' },
-      { id: 'stroke', label: '▢ Stroke (Outside / Inside / Center)', key: 'stroke' },
-      { id: 'colorOverlay', label: '🎨 Color Overlay', key: 'colorOverlay' },
-      { id: 'gradientOverlay', label: '🌈 Gradient Overlay', key: 'gradientOverlay' },
-      { id: 'dropShadow', label: '🌑 Drop Shadow', key: 'dropShadow' },
-      { id: 'innerShadow', label: '🌒 Inner Shadow', key: 'innerShadow' },
-      { id: 'outerGlow', label: '✨ Outer Glow', key: 'outerGlow' },
-      { id: 'innerGlow', label: '🌟 Inner Glow', key: 'innerGlow' },
-      { id: 'bevelEmboss', label: '⛰ Bevel & Emboss', key: 'bevelEmboss' },
-      { id: 'satin', label: '〰 Satin Contour', key: 'satin' },
-      { id: 'patternOverlay', label: '🏁 Pattern Overlay', key: 'patternOverlay' }
-    ];
-
-    this.openModal(
-      `Blending Options & Layer Style (fx) — ${layer.name}`,
-      (body) => {
-        // Section Dropdown Selector + Copy/Paste/Clear
-        const topRow = document.createElement('div');
-        topRow.style.display = 'flex';
-        topRow.style.flexDirection = 'column';
-        topRow.style.gap = '6px';
-
-        const secField = document.createElement('div');
-        secField.className = 'ctrl-field';
-        secField.innerHTML = `<label>Select Layer Style Effect Section</label>`;
-        const secSel = document.createElement('select');
-        secSel.className = 'pc-select';
-        secField.appendChild(secSel);
-        topRow.appendChild(secField);
-
-        const utilRow = document.createElement('div');
-        utilRow.style.display = 'flex';
-        utilRow.style.gap = '6px';
-        utilRow.innerHTML = `
-          <button type="button" class="opt-chip" id="fx-copy-btn">Copy Style</button>
-          <button type="button" class="opt-chip" id="fx-paste-btn">Paste Style</button>
-          <button type="button" class="opt-chip" id="fx-clear-btn">Clear All fx</button>
-        `;
-        utilRow.querySelector('#fx-copy-btn').addEventListener('click', () => {
-          this.session.dispatch('layer.copyStyle');
-          this.showToast('Copied Layer Style');
-        });
-        utilRow.querySelector('#fx-paste-btn').addEventListener('click', () => {
-          this.session.dispatch('layer.pasteStyle');
-          this.closeModal();
-          this.openLayerStylesModal(activeTab);
-          this.showToast('Pasted Layer Style');
-        });
-        utilRow.querySelector('#fx-clear-btn').addEventListener('click', () => {
-          this.session.dispatch('layer.clearStyle');
-          this.closeModal();
-          this.openLayerStylesModal(activeTab);
-          this.showToast('Cleared Layer Styles');
-        });
-        topRow.appendChild(utilRow);
-        body.appendChild(topRow);
-
-        const detailContainer = document.createElement('div');
-        detailContainer.className = 'curves-histogram-card';
-        body.appendChild(detailContainer);
-
-        const renderTabsAndDetail = () => {
-          secSel.innerHTML = '';
-          for (const t of TABS) {
-            const isEn = t.key && fx[t.key]?.enabled;
-            const opt = document.createElement('option');
-            opt.value = t.id;
-            opt.textContent = `${isEn ? '✓ [ON] ' : ''}${t.label}`;
-            if (activeTab === t.id) opt.selected = true;
-            secSel.appendChild(opt);
-          }
-
-          detailContainer.innerHTML = '';
-
-          const addEffectHeader = (fxKey, title, hasColor = false) => {
-            const eff = fx[fxKey];
-            const hdr = document.createElement('div');
-            hdr.style.display = 'flex';
-            hdr.style.alignItems = 'center';
-            hdr.style.justifyContent = 'space-between';
-            hdr.innerHTML = `
-              <label style="display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;cursor:pointer;">
-                <input type="checkbox" class="fx-en-cb" ${eff.enabled ? 'checked' : ''} />
-                Enable ${title}
-              </label>
-              ${hasColor ? `<input type="color" class="fx-col-in" value="${eff.color || '#378ef0'}" style="width:36px;height:28px;border:none;background:none;cursor:pointer;" />` : ''}
-            `;
-            const cb = hdr.querySelector('.fx-en-cb');
-            cb.addEventListener('change', () => {
-              eff.enabled = cb.checked;
-              doc.compose();
-              this.requestRender();
-              renderTabsAndDetail();
-            });
-            if (hasColor) {
-              hdr.querySelector('.fx-col-in').addEventListener('input', (e) => {
-                eff.color = e.target.value;
-                eff.enabled = true;
-                cb.checked = true;
-                doc.compose();
-                this.requestRender();
-              });
-            }
-            detailContainer.appendChild(hdr);
-            return cb;
-          };
-
-          const autoEnable = (fxKey, cb) => {
-            fx[fxKey].enabled = true;
-            if (cb) cb.checked = true;
-            doc.compose();
-            this.requestRender();
-          };
-
-          if (activeTab === 'blendingOptions') {
-            const bo = fx.blendOptions;
-            const bmField = document.createElement('div');
-            bmField.className = 'ctrl-field';
-            bmField.innerHTML = `<label>Layer Blend Mode</label>`;
-            const sel = document.createElement('select');
-            sel.className = 'pc-select';
-            for (const bm of BLEND_MODES) {
-              const o = document.createElement('option');
-              o.value = bm.id;
-              o.textContent = bm.label;
-              if (layer.blendMode === bm.id) o.selected = true;
-              sel.appendChild(o);
-            }
-            sel.addEventListener('change', () => {
-              layer.blendMode = sel.value;
-              doc.compose();
-              this.requestRender();
-            });
-            bmField.appendChild(sel);
-            detailContainer.appendChild(bmField);
-
-            this.appendRangeRow(detailContainer, 'Layer Opacity (%)', 0, 100, 1, Math.round((layer.opacity ?? 1) * 100), '%', (v) => {
-              layer.opacity = v / 100;
-              doc.compose();
-              this.requestRender();
-            });
-            this.appendRangeRow(detailContainer, 'Fill Opacity (keeps fx at 100%)', 0, 100, 1, Math.round((layer.fill ?? 1) * 100), '%', (v) => {
-              layer.fill = v / 100;
-              doc.compose();
-              this.requestRender();
-            });
-
-            const chDiv = document.createElement('div');
-            chDiv.style.display = 'flex';
-            chDiv.style.alignItems = 'center';
-            chDiv.style.justifyContent = 'space-between';
-            chDiv.innerHTML = `
-              <span style="font-size:12px;font-weight:500;">Advanced Channels</span>
-              <div style="display:flex;gap:10px;">
-                <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="bo-ch-r" ${bo.channels.r !== false ? 'checked' : ''} /> R</label>
-                <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="bo-ch-g" ${bo.channels.g !== false ? 'checked' : ''} /> G</label>
-                <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="bo-ch-b" ${bo.channels.b !== false ? 'checked' : ''} /> B</label>
-              </div>
-            `;
-            for (const k of ['r', 'g', 'b']) {
-              chDiv.querySelector(`#bo-ch-${k}`).addEventListener('change', (e) => {
-                bo.channels[k] = e.target.checked;
-                doc.compose();
-                this.requestRender();
-              });
-            }
-            detailContainer.appendChild(chDiv);
-
-            this.appendRangeRow(detailContainer, 'Blend If: This Layer Shadows Clip', 0, 240, 1, bo.blendIfBlack ?? 0, '', (v) => {
-              bo.blendIfBlack = v;
-              doc.compose();
-              this.requestRender();
-            });
-            this.appendRangeRow(detailContainer, 'Blend If: This Layer Highlights Clip', 15, 255, 1, bo.blendIfWhite ?? 255, '', (v) => {
-              bo.blendIfWhite = v;
-              doc.compose();
-              this.requestRender();
-            });
-          } else if (activeTab === 'stroke') {
-            const st = fx.stroke;
-            const cb = addEffectHeader('stroke', 'Stroke Outline', true);
-
-            const row = document.createElement('div');
-            row.style.display = 'grid';
-            row.style.gridTemplateColumns = '1fr 1fr';
-            row.style.gap = '8px';
-            row.innerHTML = `
-              <div class="ctrl-field">
-                <label>Position</label>
-                <select class="pc-select" id="st-pos">
-                  <option value="outside" ${st.position === 'outside' ? 'selected' : ''}>Outside</option>
-                  <option value="inside" ${st.position === 'inside' ? 'selected' : ''}>Inside</option>
-                  <option value="center" ${st.position === 'center' ? 'selected' : ''}>Center</option>
-                </select>
-              </div>
-              <div class="ctrl-field">
-                <label>Fill Type</label>
-                <select class="pc-select" id="st-filltype">
-                  <option value="color" ${st.fillType !== 'gradient' ? 'selected' : ''}>Solid Color</option>
-                  <option value="gradient" ${st.fillType === 'gradient' ? 'selected' : ''}>Gradient</option>
-                </select>
-              </div>
-            `;
-            row.querySelector('#st-pos').addEventListener('change', (e) => {
-              st.position = e.target.value;
-              autoEnable('stroke', cb);
-            });
-            row.querySelector('#st-filltype').addEventListener('change', (e) => {
-              st.fillType = e.target.value;
-              autoEnable('stroke', cb);
-              renderTabsAndDetail();
-            });
-            detailContainer.appendChild(row);
-
-            if (st.fillType === 'gradient') {
-              const gRow = document.createElement('div');
-              gRow.style.display = 'grid';
-              gRow.style.gridTemplateColumns = '1fr 1fr';
-              gRow.style.gap = '8px';
-              gRow.innerHTML = `
-                <div class="ctrl-field"><label>Gradient Start</label><input type="color" id="st-g1" value="${st.gradientColor1 || '#378ef0'}" style="width:100%;height:30px;" /></div>
-                <div class="ctrl-field"><label>Gradient End</label><input type="color" id="st-g2" value="${st.gradientColor2 || '#f59e0b'}" style="width:100%;height:30px;" /></div>
-              `;
-              gRow.querySelector('#st-g1').addEventListener('input', (e) => {
-                st.gradientColor1 = e.target.value;
-                autoEnable('stroke', cb);
-              });
-              gRow.querySelector('#st-g2').addEventListener('input', (e) => {
-                st.gradientColor2 = e.target.value;
-                autoEnable('stroke', cb);
-              });
-              detailContainer.appendChild(gRow);
-            }
-
-            this.appendRangeRow(detailContainer, 'Stroke Size (px)', 1, 24, 1, st.size ?? 3, 'px', (v) => {
-              st.size = v;
-              autoEnable('stroke', cb);
-            });
-            this.appendRangeRow(detailContainer, 'Stroke Opacity (%)', 0, 100, 1, Math.round((st.opacity ?? 1) * 100), '%', (v) => {
-              st.opacity = v / 100;
-              autoEnable('stroke', cb);
-            });
-          } else if (activeTab === 'colorOverlay') {
-            const co = fx.colorOverlay;
-            const cb = addEffectHeader('colorOverlay', 'Color Overlay', true);
-
-            const bmField = document.createElement('div');
-            bmField.className = 'ctrl-field';
-            bmField.innerHTML = `<label>Blend Mode</label>`;
-            const sel = document.createElement('select');
-            sel.className = 'pc-select';
-            for (const bm of BLEND_MODES) {
-              const o = document.createElement('option');
-              o.value = bm.id;
-              o.textContent = bm.label;
-              if (co.blendMode === bm.id) o.selected = true;
-              sel.appendChild(o);
-            }
-            sel.addEventListener('change', () => {
-              co.blendMode = sel.value;
-              autoEnable('colorOverlay', cb);
-            });
-            bmField.appendChild(sel);
-            detailContainer.appendChild(bmField);
-
-            this.appendRangeRow(detailContainer, 'Opacity (%)', 0, 100, 1, Math.round((co.opacity ?? 0.85) * 100), '%', (v) => {
-              co.opacity = v / 100;
-              autoEnable('colorOverlay', cb);
-            });
-          } else if (activeTab === 'gradientOverlay') {
-            const go = fx.gradientOverlay;
-            const cb = addEffectHeader('gradientOverlay', 'Gradient Overlay', false);
-
-            const row = document.createElement('div');
-            row.style.display = 'grid';
-            row.style.gridTemplateColumns = '1fr 1fr';
-            row.style.gap = '8px';
-            row.innerHTML = `
-              <div class="ctrl-field"><label>Start Color</label><input type="color" id="go-c1" value="${go.color1 || '#1e4e82'}" style="width:100%;height:30px;" /></div>
-              <div class="ctrl-field"><label>End Color</label><input type="color" id="go-c2" value="${go.color2 || '#f59e0b'}" style="width:100%;height:30px;" /></div>
-              <div class="ctrl-field">
-                <label>Style</label>
-                <select class="pc-select" id="go-style">
-                  <option value="linear" ${go.style === 'linear' ? 'selected' : ''}>Linear</option>
-                  <option value="radial" ${go.style === 'radial' ? 'selected' : ''}>Radial</option>
-                  <option value="reflected" ${go.style === 'reflected' ? 'selected' : ''}>Reflected</option>
-                </select>
-              </div>
-              <div class="ctrl-field">
-                <label>Blend Mode</label>
-                <select class="pc-select" id="go-bm">
-                  ${BLEND_MODES.map((b) => `<option value="${b.id}" ${go.blendMode === b.id ? 'selected' : ''}>${b.label}</option>`).join('')}
-                </select>
-              </div>
-            `;
-            row.querySelector('#go-c1').addEventListener('input', (e) => {
-              go.color1 = e.target.value;
-              autoEnable('gradientOverlay', cb);
-            });
-            row.querySelector('#go-c2').addEventListener('input', (e) => {
-              go.color2 = e.target.value;
-              autoEnable('gradientOverlay', cb);
-            });
-            row.querySelector('#go-style').addEventListener('change', (e) => {
-              go.style = e.target.value;
-              autoEnable('gradientOverlay', cb);
-            });
-            row.querySelector('#go-bm').addEventListener('change', (e) => {
-              go.blendMode = e.target.value;
-              autoEnable('gradientOverlay', cb);
-            });
-            detailContainer.appendChild(row);
-
-            this.appendRangeRow(detailContainer, 'Opacity (%)', 0, 100, 1, Math.round((go.opacity ?? 0.9) * 100), '%', (v) => {
-              go.opacity = v / 100;
-              autoEnable('gradientOverlay', cb);
-            });
-            this.appendRangeRow(detailContainer, 'Angle (°)', -180, 180, 5, go.angle ?? 90, '°', (v) => {
-              go.angle = v;
-              autoEnable('gradientOverlay', cb);
-            });
-            this.appendRangeRow(detailContainer, 'Scale (%)', 25, 150, 5, go.scale ?? 100, '%', (v) => {
-              go.scale = v;
-              autoEnable('gradientOverlay', cb);
-            });
-          } else if (activeTab === 'dropShadow') {
-            const ds = fx.dropShadow;
-            const cb = addEffectHeader('dropShadow', 'Drop Shadow', true);
-            this.appendRangeRow(detailContainer, 'Opacity (%)', 0, 100, 1, Math.round((ds.opacity ?? 0.72) * 100), '%', (v) => {
-              ds.opacity = v / 100;
-              autoEnable('dropShadow', cb);
-            });
-            this.appendRangeRow(detailContainer, 'Angle (°)', -180, 180, 5, ds.angle ?? 120, '°', (v) => {
-              ds.angle = v;
-              autoEnable('dropShadow', cb);
-            });
-            this.appendRangeRow(detailContainer, 'Distance (px)', 0, 60, 1, ds.distance ?? 10, 'px', (v) => {
-              ds.distance = v;
-              autoEnable('dropShadow', cb);
-            });
-            this.appendRangeRow(detailContainer, 'Size / Blur (px)', 0, 60, 1, ds.size ?? 16, 'px', (v) => {
-              ds.size = v;
-              autoEnable('dropShadow', cb);
-            });
-          } else if (activeTab === 'innerShadow') {
-            const is = fx.innerShadow;
-            const cb = addEffectHeader('innerShadow', 'Inner Shadow', true);
-            this.appendRangeRow(detailContainer, 'Opacity (%)', 0, 100, 1, Math.round((is.opacity ?? 0.75) * 100), '%', (v) => {
-              is.opacity = v / 100;
-              autoEnable('innerShadow', cb);
-            });
-            this.appendRangeRow(detailContainer, 'Angle (°)', -180, 180, 5, is.angle ?? 120, '°', (v) => {
-              is.angle = v;
-              autoEnable('innerShadow', cb);
-            });
-            this.appendRangeRow(detailContainer, 'Distance (px)', 0, 50, 1, is.distance ?? 6, 'px', (v) => {
-              is.distance = v;
-              autoEnable('innerShadow', cb);
-            });
-            this.appendRangeRow(detailContainer, 'Size (px)', 1, 50, 1, is.size ?? 8, 'px', (v) => {
-              is.size = v;
-              autoEnable('innerShadow', cb);
-            });
-          } else if (activeTab === 'outerGlow') {
-            const og = fx.outerGlow;
-            const cb = addEffectHeader('outerGlow', 'Outer Glow', true);
-            this.appendRangeRow(detailContainer, 'Opacity (%)', 0, 100, 1, Math.round((og.opacity ?? 0.78) * 100), '%', (v) => {
-              og.opacity = v / 100;
-              autoEnable('outerGlow', cb);
-            });
-            this.appendRangeRow(detailContainer, 'Glow Size (px)', 1, 70, 1, og.size ?? 20, 'px', (v) => {
-              og.size = v;
-              autoEnable('outerGlow', cb);
-            });
-          } else if (activeTab === 'innerGlow') {
-            const ig = fx.innerGlow;
-            const cb = addEffectHeader('innerGlow', 'Inner Glow', true);
-            this.appendRangeRow(detailContainer, 'Opacity (%)', 0, 100, 1, Math.round((ig.opacity ?? 0.75) * 100), '%', (v) => {
-              ig.opacity = v / 100;
-              autoEnable('innerGlow', cb);
-            });
-            this.appendRangeRow(detailContainer, 'Glow Size (px)', 1, 60, 1, ig.size ?? 14, 'px', (v) => {
-              ig.size = v;
-              autoEnable('innerGlow', cb);
-            });
-          } else if (activeTab === 'bevelEmboss') {
-            const bev = fx.bevelEmboss;
-            const cb = addEffectHeader('bevelEmboss', 'Bevel & Emboss', false);
-            this.appendRangeRow(detailContainer, 'Depth (%)', 10, 300, 10, bev.depth ?? 100, '%', (v) => {
-              bev.depth = v;
-              autoEnable('bevelEmboss', cb);
-            });
-            this.appendRangeRow(detailContainer, 'Size (px)', 1, 36, 1, bev.size ?? 8, 'px', (v) => {
-              bev.size = v;
-              autoEnable('bevelEmboss', cb);
-            });
-            this.appendRangeRow(detailContainer, 'Soften (px)', 0, 12, 1, bev.soften ?? 2, 'px', (v) => {
-              bev.soften = v;
-              autoEnable('bevelEmboss', cb);
-            });
-            this.appendRangeRow(detailContainer, 'Light Angle (°)', -180, 180, 5, bev.angle ?? 120, '°', (v) => {
-              bev.angle = v;
-              autoEnable('bevelEmboss', cb);
-            });
-          } else if (activeTab === 'satin') {
-            const sat = fx.satin;
-            const cb = addEffectHeader('satin', 'Satin Contour', true);
-            this.appendRangeRow(detailContainer, 'Opacity (%)', 0, 100, 1, Math.round((sat.opacity ?? 0.5) * 100), '%', (v) => {
-              sat.opacity = v / 100;
-              autoEnable('satin', cb);
-            });
-            this.appendRangeRow(detailContainer, 'Distance (px)', 1, 50, 1, sat.distance ?? 14, 'px', (v) => {
-              sat.distance = v;
-              autoEnable('satin', cb);
-            });
-            this.appendRangeRow(detailContainer, 'Size (px)', 1, 50, 1, sat.size ?? 16, 'px', (v) => {
-              sat.size = v;
-              autoEnable('satin', cb);
-            });
-          } else if (activeTab === 'patternOverlay') {
-            const po = fx.patternOverlay;
-            const cb = addEffectHeader('patternOverlay', 'Pattern Overlay', false);
-            const pSel = document.createElement('select');
-            pSel.className = 'pc-select';
-            for (const p of [
-              { id: 'stripes', label: 'Diagonal Stripes' },
-              { id: 'checker', label: 'Checkerboard' },
-              { id: 'dots', label: 'Halftone Polka Dots' },
-              { id: 'grid', label: 'Technical Grid' }
-            ]) {
-              const o = document.createElement('option');
-              o.value = p.id;
-              o.textContent = p.label;
-              if (po.pattern === p.id) o.selected = true;
-              pSel.appendChild(o);
-            }
-            pSel.addEventListener('change', () => {
-              po.pattern = pSel.value;
-              autoEnable('patternOverlay', cb);
-            });
-            detailContainer.appendChild(pSel);
-            this.appendRangeRow(detailContainer, 'Opacity (%)', 0, 100, 1, Math.round((po.opacity ?? 0.55) * 100), '%', (v) => {
-              po.opacity = v / 100;
-              autoEnable('patternOverlay', cb);
-            });
-            this.appendRangeRow(detailContainer, 'Pattern Scale (%)', 25, 250, 5, po.scale ?? 100, '%', (v) => {
-              po.scale = v;
-              autoEnable('patternOverlay', cb);
-            });
-          }
-        };
-
-        secSel.addEventListener('change', () => {
-          activeTab = secSel.value;
-          renderTabsAndDetail();
-        });
-
-        renderTabsAndDetail();
-      },
-      (footer) => {
-        const done = document.createElement('button');
-        done.type = 'button';
-        done.className = 'pill-action-btn';
-        done.textContent = 'Apply Blending & Styles ✓';
-        done.addEventListener('click', () => {
-          doc.pushHistory(`Layer Styles (${layer.name})`);
-          this.session.notify('layer.styles');
-          this.closeModal();
-        });
-        footer.appendChild(done);
-      }
-    );
+  openLayerStylesModal(initialSection = 'blendingOptions', initialIndex = 0) {
+    this.layerStyleDialog.open(initialSection, initialIndex);
   }
 
   /**
