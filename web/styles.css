@@ -281,7 +281,7 @@ html, body {
 }
 
 .outer-environment.phone-frame-mode .mobile-app-shell {
-  width: 412px;
+  width: min(412px, 100vw);
   height: min(884px, calc(100vh - 58px));
   border-radius: 34px;
   border: 8px solid #26292e;
@@ -304,6 +304,21 @@ html, body {
   padding: 0 6px;
   gap: 4px;
   z-index: 70;
+}
+
+@media (max-width: 395px) {
+  .top-bar {
+    padding: 0 4px;
+    gap: 2px;
+  }
+  .top-bar .brand-cluster {
+    max-width: 102px;
+  }
+  .top-bar .top-pill-btn,
+  .top-bar .export-pill-btn {
+    padding: 0 6px;
+    font-size: 10.5px;
+  }
 }
 
 .brand-cluster {
@@ -1878,24 +1893,46 @@ html, body {
 /* ============================================================================
  * Adobe Photoshop-Exact Layer Style (fx) Dialog & Layers Panel Effects Tree
  * ============================================================================ */
+.modal-overlay.ps-fx-overlay {
+  padding: 6px;
+}
+
+.modal-overlay.ps-fx-peek-mode {
+  align-items: flex-end;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.14);
+}
+
 .modal-card.ps-fx-modal-card {
   max-width: 680px;
   width: 100%;
+  min-width: 0;
   max-height: 92%;
+  box-sizing: border-box;
   background: #2b2c30;
   border: 1px solid #44474e;
 }
 
+.modal-card.ps-fx-modal-card.ps-fx-peek-mode {
+  max-height: 49vh;
+  border-radius: 14px 14px 0 0;
+  border-bottom: none;
+  box-shadow: 0 -10px 36px rgba(0, 0, 0, 0.72);
+}
+
 .modal-card.ps-fx-modal-card .modal-header {
-  padding: 8px 12px;
+  padding: 7px 10px;
   background: #232428;
   border-bottom: 1px solid #3c3e45;
 }
 
 .modal-card.ps-fx-modal-card .modal-header h3 {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   color: #e6e7ea;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .modal-card.ps-fx-modal-card .modal-body {
@@ -1908,13 +1945,13 @@ html, body {
   min-height: 0;
 }
 
-/* Top Photoshop Action Strip (Preview Box, Preview Toggle, New Style, Cancel, OK) */
+/* Top Photoshop Action Strip (Preview Box, Preview Toggle, 👁 Canvas, New Style, Cancel, OK) */
 .ps-fx-top-strip {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 6px;
+  padding: 6px 8px;
   background: #25262a;
   border-bottom: 1px solid #3a3c43;
   flex-shrink: 0;
@@ -1924,12 +1961,12 @@ html, body {
 .ps-fx-preview-wrap {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .ps-fx-preview-canvas {
-  width: 44px;
-  height: 44px;
+  width: 38px;
+  height: 38px;
   border-radius: 5px;
   border: 1px solid #4f525b;
   background: #383a3f;
@@ -1939,17 +1976,17 @@ html, body {
 .ps-fx-top-btns {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
 }
 
 .ps-fx-btn {
-  padding: 5px 10px;
+  padding: 4px 8px;
   border-radius: 99px;
   border: 1px solid #555861;
   background: #35373d;
   color: #e8e9ec;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
@@ -1961,12 +1998,19 @@ html, body {
   border-color: #707480;
 }
 
+.ps-fx-btn.active {
+  background: rgba(20, 115, 230, 0.25);
+  border-color: #3b82f6;
+  color: #93c5fd;
+  font-weight: 600;
+}
+
 .ps-fx-btn.primary {
   background: #1473e6;
   border-color: #2b86f6;
   color: #ffffff;
   font-weight: 600;
-  padding: 5px 14px;
+  padding: 4px 12px;
 }
 
 .ps-fx-btn.primary:hover {
@@ -1996,19 +2040,31 @@ html, body {
 .ps-fx-split {
   display: flex;
   flex: 1;
-  min-height: 360px;
-  max-height: 68vh;
+  min-width: 0;
+  min-height: 220px;
+  max-height: 70vh;
   overflow: hidden;
 }
 
+.modal-card.ps-fx-peek-mode .ps-fx-split {
+  min-height: 160px;
+  max-height: calc(49vh - 86px);
+}
+
 .ps-fx-sidebar {
-  width: 146px;
+  width: 122px;
   flex-shrink: 0;
   background: #222327;
   border-right: 1px solid #3a3c43;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+@media (min-width: 460px) {
+  .ps-fx-sidebar {
+    width: 146px;
+  }
 }
 
 .ps-fx-tree {
@@ -2021,7 +2077,7 @@ html, body {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 5px 5px 5px 6px;
+  padding: 5px 4px 5px 5px;
   font-size: 10.5px;
   color: #d0d3da;
   cursor: pointer;
@@ -2041,8 +2097,8 @@ html, body {
 }
 
 .ps-fx-tree-row.indent {
-  padding-left: 18px;
-  font-size: 10.5px;
+  padding-left: 16px;
+  font-size: 10px;
   color: #b4b8c2;
 }
 
@@ -2096,7 +2152,7 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 5px 6px;
+  padding: 4px 5px;
   background: #1c1d21;
   border-top: 1px solid #373941;
   flex-shrink: 0;
@@ -2104,13 +2160,13 @@ html, body {
 
 .ps-fx-mini-btn {
   height: 22px;
-  min-width: 22px;
-  padding: 0 5px;
+  min-width: 21px;
+  padding: 0 4px;
   border-radius: 4px;
   border: 1px solid #454852;
   background: #2b2d34;
   color: #d1d5db;
-  font-size: 10.5px;
+  font-size: 10px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -2129,10 +2185,11 @@ html, body {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: 8px 10px 14px;
+  overflow-x: hidden;
+  padding: 7px 8px 14px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 7px;
   background: #2d2e33;
 }
 
@@ -2151,11 +2208,12 @@ html, body {
   padding: 7px 8px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 7px;
+  min-width: 0;
 }
 
 .ps-fx-legend {
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 700;
   color: #9ca3af;
   text-transform: uppercase;
@@ -2166,32 +2224,56 @@ html, body {
 .ps-fx-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   flex-wrap: wrap;
+  min-width: 0;
+}
+
+.ps-fx-row-nowrap {
+  flex-wrap: nowrap;
 }
 
 .ps-fx-col {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
+  min-width: 0;
 }
 
+/* 2-Row Full-Width Precision Mobile Slider Control */
 .ps-fx-slider-row {
   display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ps-fx-slider-head {
+  display: flex;
   align-items: center;
-  gap: 5px;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ps-fx-slider-val {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
 }
 
 .ps-fx-lbl {
   font-size: 10.5px;
   color: #cfd3db;
-  min-width: 50px;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .ps-fx-select {
   flex: 1;
-  min-width: 82px;
+  min-width: 0;
+  width: 100%;
   height: 25px;
   padding: 0 4px;
   border-radius: 4px;
@@ -2202,14 +2284,15 @@ html, body {
 }
 
 .ps-fx-range {
-  flex: 1;
-  min-width: 44px;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
 }
 
 .ps-fx-num {
-  width: 40px;
+  width: 52px;
   height: 23px;
-  padding: 0 3px;
+  padding: 0 4px;
   border-radius: 4px;
   border: 1px solid #4b4e58;
   background: #1c1d21;
@@ -2218,6 +2301,7 @@ html, body {
   font-family: var(--pc-font-mono);
   text-align: right;
   flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .ps-fx-unit {
@@ -2260,7 +2344,7 @@ html, body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 0;
+  padding: 2px 0;
 }
 
 .ps-fx-dial {
@@ -2304,18 +2388,21 @@ html, body {
 .ps-fx-contour-pop {
   position: absolute;
   top: 100%;
-  left: 0;
+  right: 0;
+  left: auto;
   z-index: 40;
   margin-top: 4px;
   padding: 6px;
-  width: 224px;
+  width: 196px;
+  max-width: 100%;
+  box-sizing: border-box;
   background: #1f2025;
   border: 1px solid #4e525f;
   border-radius: 7px;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.7);
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 5px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
 }
 
 .ps-fx-contour-pop[hidden] {

@@ -8158,7 +8158,7 @@ class ProStudioMobileApp {
   /**
    * Complete Adobe Photoshop-Exact Layer Style Dialog (fx)
    */
-  openLayerStylesModal(initialSection = 'blendingOptions', initialIndex = 0) {
+  openLayerStylesModal(initialSection = null, initialIndex = 0) {
     this.layerStyleDialog.open(initialSection, initialIndex);
   }
 

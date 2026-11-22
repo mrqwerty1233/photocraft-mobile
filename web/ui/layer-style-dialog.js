@@ -170,7 +170,7 @@ export class PhotoshopLayerStyleDialog {
     this.app = app;
   }
 
-  open(initialSection = 'blendingOptions', initialIndex = 0) {
+  open(initialSection = null, initialIndex = 0) {
     const doc = this.app.session.doc;
     const layer = doc?.activeLayer;
     if (!doc || !layer || layer.kind === 'adjustment') {
@@ -197,11 +197,28 @@ export class PhotoshopLayerStyleDialog {
       blendMode: layer.blendMode || 'source-over'
     };
     let previewEnabled = true;
+    let peekCanvasMode = false;
+    let pendingRaf = null;
+
+    // Smart Initial Section: when opened generically (null), jump straight to the first enabled effect
+    // (e.g., Drop Shadow) so users immediately see its controls instead of hunting from Blending Options!
+    let resolvedSection = initialSection;
+    let resolvedIndex = initialIndex || 0;
+    if (!resolvedSection) {
+      const activeEntries = LayerStylesEngine.listActiveEffectEntries(workingStyles);
+      if (activeEntries.length > 0) {
+        resolvedSection = activeEntries[0].type;
+        resolvedIndex = activeEntries[0].index || 0;
+      } else {
+        resolvedSection = 'blendingOptions';
+        resolvedIndex = 0;
+      }
+    }
 
     // Selection state in left tree: { section, index }
     let activeSelection = {
-      section: initialSection || 'blendingOptions',
-      index: initialIndex || 0
+      section: resolvedSection,
+      index: resolvedIndex
     };
 
     const overlay = document.getElementById('modal-overlay');
@@ -209,14 +226,20 @@ export class PhotoshopLayerStyleDialog {
     const titleEl = document.getElementById('modal-title');
     const bodyEl = document.getElementById('modal-body');
     const footerEl = document.getElementById('modal-footer');
-    const closeBtn = document.getElementById('modal-close-btn');
 
+    overlay.classList.add('ps-fx-overlay');
+    overlay.classList.remove('ps-fx-peek-mode');
     card.classList.add('ps-fx-modal-card');
+    card.classList.remove('ps-fx-peek-mode');
     titleEl.textContent = `Layer Style — ${layer.name}`;
     bodyEl.innerHTML = '';
     footerEl.innerHTML = '';
 
     const applyToCanvas = () => {
+      if (pendingRaf) {
+        cancelAnimationFrame(pendingRaf);
+        pendingRaf = null;
+      }
       if (previewEnabled) {
         layer.styles = workingStyles;
         layer.opacity = workingMeta.opacity;
@@ -235,6 +258,24 @@ export class PhotoshopLayerStyleDialog {
       }
     };
 
+    const scheduleApplyToCanvas = () => {
+      if (pendingRaf) return;
+      pendingRaf = requestAnimationFrame(() => {
+        pendingRaf = null;
+        applyToCanvas();
+      });
+    };
+
+    const cleanupAndClose = () => {
+      if (pendingRaf) {
+        cancelAnimationFrame(pendingRaf);
+        pendingRaf = null;
+      }
+      overlay.classList.remove('ps-fx-overlay', 'ps-fx-peek-mode');
+      card.classList.remove('ps-fx-modal-card', 'ps-fx-peek-mode');
+      overlay.hidden = true;
+    };
+
     const cancelAndClose = () => {
       layer.styles = structuredClone(snapshot.styles);
       layer.opacity = snapshot.opacity;
@@ -251,18 +292,14 @@ export class PhotoshopLayerStyleDialog {
       layer.opacity = workingMeta.opacity;
       layer.fill = workingMeta.fill;
       layer.blendMode = workingMeta.blendMode;
+      doc.compose();
       doc.pushHistory(`Layer Style (${layer.name})`);
       this.app.session.notify('layer.styles');
       cleanupAndClose();
     };
 
-    const cleanupAndClose = () => {
-      card.classList.remove('ps-fx-modal-card');
-      overlay.hidden = true;
-    };
-
     // ------------------------------------------------------------------------
-    // TOP PHOTOSHOP ACTION BAR (Live Preview Square + [✓] Preview + New Style + Cancel + OK)
+    // TOP PHOTOSHOP ACTION BAR (Live Preview Square + [✓] Preview + 👁 Canvas + New Style + Cancel + OK)
     // ------------------------------------------------------------------------
     const topStrip = document.createElement('div');
     topStrip.className = 'ps-fx-top-strip';
@@ -288,6 +325,20 @@ export class PhotoshopLayerStyleDialog {
     const topBtns = document.createElement('div');
     topBtns.className = 'ps-fx-top-btns';
 
+    const btnPeek = document.createElement('button');
+    btnPeek.type = 'button';
+    btnPeek.className = 'ps-fx-btn';
+    btnPeek.id = 'ps-fx-peek-btn';
+    btnPeek.title = 'Dock panel to bottom half so you can see your live canvas while adjusting fx';
+    btnPeek.textContent = '👁 Canvas';
+    btnPeek.addEventListener('click', () => {
+      peekCanvasMode = !peekCanvasMode;
+      overlay.classList.toggle('ps-fx-peek-mode', peekCanvasMode);
+      card.classList.toggle('ps-fx-peek-mode', peekCanvasMode);
+      btnPeek.classList.toggle('active', peekCanvasMode);
+      btnPeek.textContent = peekCanvasMode ? '⤢ Full' : '👁 Canvas';
+    });
+
     const btnNewStyle = document.createElement('button');
     btnNewStyle.type = 'button';
     btnNewStyle.className = 'ps-fx-btn';
@@ -306,6 +357,7 @@ export class PhotoshopLayerStyleDialog {
     btnOk.id = 'ps-fx-ok-btn';
     btnOk.textContent = 'OK';
 
+    topBtns.appendChild(btnPeek);
     topBtns.appendChild(btnNewStyle);
     topBtns.appendChild(btnCancel);
     topBtns.appendChild(btnOk);
@@ -377,6 +429,12 @@ export class PhotoshopLayerStyleDialog {
     split.appendChild(leftCol);
     split.appendChild(rightCol);
     bodyEl.appendChild(split);
+
+    split.addEventListener('click', () => {
+      rightCol.querySelectorAll('.ps-fx-contour-pop').forEach((p) => { p.hidden = true; });
+      const fxMenuPop = treeFooter.querySelector('#ps-tree-fx-popover');
+      if (fxMenuPop) fxMenuPop.hidden = true;
+    });
 
     // Helper: Get currently active effect object (for stackable or singleton)
     const getTargetEffect = (sec = activeSelection.section, idx = activeSelection.index) => {
@@ -651,28 +709,36 @@ export class PhotoshopLayerStyleDialog {
       });
 
       addStackableGroup('dropShadow', 'Drop Shadow');
+
+      const activeRow = treeList.querySelector('.ps-fx-tree-row.active');
+      if (activeRow) activeRow.scrollIntoView({ block: 'nearest' });
     };
 
     // ------------------------------------------------------------------------
     // PHOTOSHOP CONTROL BUILDER HELPERS
     // ------------------------------------------------------------------------
 
-    const markActiveEnabled = () => {
+    const markActiveEnabled = (immediate = true) => {
       const sec = activeSelection.section;
+      let treeDirty = false;
       if (sec === 'contour') {
+        if (!workingStyles.bevelEmboss.enabled || !workingStyles.bevelEmboss.contourEnabled) treeDirty = true;
         workingStyles.bevelEmboss.enabled = true;
         workingStyles.bevelEmboss.contourEnabled = true;
       } else if (sec === 'texture') {
+        if (!workingStyles.bevelEmboss.enabled || !workingStyles.bevelEmboss.textureEnabled) treeDirty = true;
         workingStyles.bevelEmboss.enabled = true;
         workingStyles.bevelEmboss.textureEnabled = true;
       } else if (sec !== 'styles' && sec !== 'blendingOptions') {
         const eff = getTargetEffect();
         if (eff && eff.enabled === false) {
           eff.enabled = true;
-          renderTree();
+          treeDirty = true;
         }
       }
-      applyToCanvas();
+      if (treeDirty) renderTree();
+      if (immediate) applyToCanvas();
+      else scheduleApplyToCanvas();
     };
 
     const addSectionHeading = (parent, title) => {
@@ -697,7 +763,7 @@ export class PhotoshopLayerStyleDialog {
 
     const addBlendModeSelect = (parent, label, value, colorHex, onModeChange, onColorChange) => {
       const row = document.createElement('div');
-      row.className = 'ps-fx-row';
+      row.className = 'ps-fx-row ps-fx-row-nowrap';
       const lbl = document.createElement('label');
       lbl.className = 'ps-fx-lbl';
       lbl.textContent = `${label}:`;
@@ -722,7 +788,7 @@ export class PhotoshopLayerStyleDialog {
       }
       sel.addEventListener('change', () => {
         onModeChange(sel.value);
-        markActiveEnabled();
+        markActiveEnabled(true);
       });
       row.appendChild(sel);
 
@@ -734,7 +800,7 @@ export class PhotoshopLayerStyleDialog {
         col.title = 'Pick Color';
         col.addEventListener('input', () => {
           onColorChange(col.value);
-          markActiveEnabled();
+          markActiveEnabled(false);
         });
         row.appendChild(col);
       }
@@ -743,7 +809,7 @@ export class PhotoshopLayerStyleDialog {
 
     const addSelectRow = (parent, label, options, value, onChange) => {
       const row = document.createElement('div');
-      row.className = 'ps-fx-row';
+      row.className = 'ps-fx-row ps-fx-row-nowrap';
       const lbl = document.createElement('label');
       lbl.className = 'ps-fx-lbl';
       lbl.textContent = `${label}:`;
@@ -760,7 +826,7 @@ export class PhotoshopLayerStyleDialog {
       }
       sel.addEventListener('change', () => {
         onChange(sel.value);
-        markActiveEnabled();
+        markActiveEnabled(true);
       });
       row.appendChild(sel);
       parent.appendChild(row);
@@ -770,17 +836,15 @@ export class PhotoshopLayerStyleDialog {
       const row = document.createElement('div');
       row.className = 'ps-fx-slider-row';
 
+      const head = document.createElement('div');
+      head.className = 'ps-fx-slider-head';
+
       const lbl = document.createElement('label');
       lbl.className = 'ps-fx-lbl';
       lbl.textContent = `${label}:`;
 
-      const range = document.createElement('input');
-      range.type = 'range';
-      range.className = 'pc-range ps-fx-range';
-      range.min = String(min);
-      range.max = String(max);
-      range.step = String(step);
-      range.value = String(value);
+      const valWrap = document.createElement('div');
+      valWrap.className = 'ps-fx-slider-val';
 
       const num = document.createElement('input');
       num.type = 'number';
@@ -794,11 +858,30 @@ export class PhotoshopLayerStyleDialog {
       unitEl.className = 'ps-fx-unit';
       unitEl.textContent = unit || '';
 
+      valWrap.appendChild(num);
+      valWrap.appendChild(unitEl);
+      head.appendChild(lbl);
+      head.appendChild(valWrap);
+
+      const range = document.createElement('input');
+      range.type = 'range';
+      range.className = 'pc-range ps-fx-range';
+      range.min = String(min);
+      range.max = String(max);
+      range.step = String(step);
+      range.value = String(value);
+
       range.addEventListener('input', () => {
         const v = Number(range.value);
         num.value = String(v);
         onChange(v);
-        markActiveEnabled();
+        markActiveEnabled(false);
+      });
+      range.addEventListener('change', () => {
+        const v = Number(range.value);
+        num.value = String(v);
+        onChange(v);
+        markActiveEnabled(true);
       });
 
       num.addEventListener('input', () => {
@@ -807,13 +890,20 @@ export class PhotoshopLayerStyleDialog {
         v = Math.max(min, Math.min(max, v));
         range.value = String(v);
         onChange(v);
-        markActiveEnabled();
+        markActiveEnabled(false);
+      });
+      num.addEventListener('change', () => {
+        let v = Number(num.value);
+        if (!Number.isFinite(v)) v = value;
+        v = Math.max(min, Math.min(max, v));
+        num.value = String(v);
+        range.value = String(v);
+        onChange(v);
+        markActiveEnabled(true);
       });
 
-      row.appendChild(lbl);
+      row.appendChild(head);
       row.appendChild(range);
-      row.appendChild(num);
-      row.appendChild(unitEl);
       parent.appendChild(row);
       return { range, num };
     };
@@ -896,11 +986,12 @@ export class PhotoshopLayerStyleDialog {
       fields.className = 'ps-fx-angle-fields';
 
       const angRow = document.createElement('div');
-      angRow.className = 'ps-fx-row';
-      angRow.innerHTML = `<label class="ps-fx-lbl" style="min-width:52px;">Angle:</label>`;
+      angRow.className = 'ps-fx-row ps-fx-row-nowrap';
+      angRow.innerHTML = `<label class="ps-fx-lbl" style="min-width:44px;">Angle:</label>`;
       const angNum = document.createElement('input');
       angNum.type = 'number';
       angNum.className = 'ps-fx-num';
+      angNum.style.width = '48px';
       angNum.min = '-180';
       angNum.max = '180';
       angNum.value = String(Math.round(curAngle));
@@ -914,11 +1005,12 @@ export class PhotoshopLayerStyleDialog {
       let altNum = null;
       if (altitude !== null && onAltitudeChange) {
         const altRow = document.createElement('div');
-        altRow.className = 'ps-fx-row';
-        altRow.innerHTML = `<label class="ps-fx-lbl" style="min-width:52px;">Altitude:</label>`;
+        altRow.className = 'ps-fx-row ps-fx-row-nowrap';
+        altRow.innerHTML = `<label class="ps-fx-lbl" style="min-width:44px;">Altitude:</label>`;
         altNum = document.createElement('input');
         altNum.type = 'number';
         altNum.className = 'ps-fx-num';
+        altNum.style.width = '48px';
         altNum.min = '0';
         altNum.max = '90';
         altNum.value = String(Math.round(curAlt));
@@ -950,21 +1042,24 @@ export class PhotoshopLayerStyleDialog {
         fields.appendChild(glLbl);
       }
 
-      const updateFromAngle = (v) => {
+      const updateFromAngle = (v, immediate = false) => {
         const clamped = Math.max(-180, Math.min(180, Math.round(v)));
         angNum.value = String(clamped);
         if (useGlobalLight) doc.globalLight.angle = clamped;
         onAngleChange(clamped);
         drawDial(clamped, altNum ? Number(altNum.value) : null);
-        markActiveEnabled();
+        markActiveEnabled(immediate);
       };
 
       angNum.addEventListener('input', () => {
-        updateFromAngle(Number(angNum.value) || 0);
+        updateFromAngle(Number(angNum.value) || 0, false);
+      });
+      angNum.addEventListener('change', () => {
+        updateFromAngle(Number(angNum.value) || 0, true);
       });
 
       let draggingDial = false;
-      const pointerToDial = (ev) => {
+      const pointerToDial = (ev, immediate = false) => {
         const rect = dial.getBoundingClientRect();
         const dx = ev.clientX - (rect.left + rect.width / 2);
         const dy = -(ev.clientY - (rect.top + rect.height / 2));
@@ -976,18 +1071,23 @@ export class PhotoshopLayerStyleDialog {
           if (useGlobalLight) doc.globalLight.altitude = alt;
           onAltitudeChange(alt);
         }
-        updateFromAngle(deg);
+        updateFromAngle(deg, immediate);
       };
 
       dial.addEventListener('pointerdown', (e) => {
         draggingDial = true;
         dial.setPointerCapture(e.pointerId);
-        pointerToDial(e);
+        pointerToDial(e, false);
       });
       dial.addEventListener('pointermove', (e) => {
-        if (draggingDial) pointerToDial(e);
+        if (draggingDial) pointerToDial(e, false);
       });
-      dial.addEventListener('pointerup', () => { draggingDial = false; });
+      dial.addEventListener('pointerup', (e) => {
+        if (draggingDial) {
+          draggingDial = false;
+          pointerToDial(e, true);
+        }
+      });
 
       wrap.appendChild(dial);
       wrap.appendChild(fields);
@@ -1040,16 +1140,20 @@ export class PhotoshopLayerStyleDialog {
         item.addEventListener('click', (e) => {
           e.stopPropagation();
           pop.hidden = true;
+          pop.querySelectorAll('.ps-fx-contour-cell').forEach((btn) => btn.classList.remove('active'));
+          item.classList.add('active');
           drawContourThumbnail(thumb, cp.id);
           onContourChange(cp.id);
-          markActiveEnabled();
+          markActiveEnabled(true);
         });
         pop.appendChild(item);
       }
 
       trigger.addEventListener('click', (e) => {
         e.stopPropagation();
-        pop.hidden = !pop.hidden;
+        const willOpen = pop.hidden;
+        rightCol.querySelectorAll('.ps-fx-contour-pop').forEach((p) => { p.hidden = true; });
+        pop.hidden = !willOpen;
       });
 
       row.appendChild(trigger);
@@ -2146,7 +2250,8 @@ export class PhotoshopLayerStyleDialog {
     footerEl.style.display = 'none';
     const restoreModalChrome = () => {
       footerEl.style.display = '';
-      card.classList.remove('ps-fx-modal-card');
+      overlay.classList.remove('ps-fx-overlay', 'ps-fx-peek-mode');
+      card.classList.remove('ps-fx-modal-card', 'ps-fx-peek-mode');
       this.app._modalCancelHook = null;
     };
 

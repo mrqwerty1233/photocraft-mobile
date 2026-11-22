@@ -717,14 +717,36 @@ export class StudioDoc {
     }
 
     if (hasMask && maskHidesEffects) {
-      // Photoshop "Layer Mask Hides Effects": render effects first, then clip entire result by mask
+      // Photoshop "Layer Mask Hides Effects": composite layer + effects over real backdrop,
+      // then interpolate back into destCtx weighted by layer mask luminance * alpha
       const fxBuf = document.createElement('canvas');
       fxBuf.width = this.width;
       fxBuf.height = this.height;
       const fxCtx = fxBuf.getContext('2d');
+      fxCtx.drawImage(destCtx.canvas, 0, 0);
       LayerStylesEngine.renderLayerWithEffects(layer, fxCtx, srcCanvas, this.width, this.height, this.globalLight);
-      const clipped = applyLayerMaskToCanvas(fxBuf);
-      destCtx.drawImage(clipped, 0, 0);
+
+      const origImg = destCtx.getImageData(0, 0, this.width, this.height);
+      const fxData = fxCtx.getImageData(0, 0, this.width, this.height).data;
+      const maskData = layer.maskCanvas.getContext('2d').getImageData(0, 0, this.width, this.height).data;
+      const od = origImg.data;
+      for (let i = 0; i < od.length; i += 4) {
+        const m = (maskData[i] / 255) * (maskData[i + 3] / 255);
+        if (m <= 0.001) continue;
+        if (m >= 0.999) {
+          od[i] = fxData[i];
+          od[i + 1] = fxData[i + 1];
+          od[i + 2] = fxData[i + 2];
+          od[i + 3] = fxData[i + 3];
+        } else {
+          const inv = 1 - m;
+          od[i] = Math.round(od[i] * inv + fxData[i] * m);
+          od[i + 1] = Math.round(od[i + 1] * inv + fxData[i + 1] * m);
+          od[i + 2] = Math.round(od[i + 2] * inv + fxData[i + 2] * m);
+          od[i + 3] = Math.round(od[i + 3] * inv + fxData[i + 3] * m);
+        }
+      }
+      destCtx.putImageData(origImg, 0, 0);
       return;
     }
 

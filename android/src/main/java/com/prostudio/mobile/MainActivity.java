@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -19,6 +20,8 @@ import android.provider.MediaStore;
 import android.util.Base64;
 import android.view.View;
 import android.view.Window;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
@@ -27,6 +30,7 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 import android.widget.Toast;
 
 import java.io.File;
@@ -52,12 +56,44 @@ public class MainActivity extends Activity {
         Window window = getWindow();
         if (window != null) {
             window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
-            window.setStatusBarColor(Color.parseColor("#090B10"));
-            window.setNavigationBarColor(Color.parseColor("#090B10"));
+            window.setStatusBarColor(Color.parseColor("#18191C"));
+            window.setNavigationBarColor(Color.parseColor("#18191C"));
+            if (Build.VERSION.SDK_INT >= 30) {
+                WindowInsetsController wic = window.getInsetsController();
+                if (wic != null) {
+                    wic.setSystemBarsAppearance(
+                            0,
+                            WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS |
+                                    WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                    );
+                }
+            }
         }
 
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(Color.parseColor("#18191C"));
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            if (Build.VERSION.SDK_INT >= 30) {
+                Insets bars = insets.getInsets(
+                        WindowInsets.Type.systemBars() |
+                                WindowInsets.Type.displayCutout() |
+                                WindowInsets.Type.ime()
+                );
+                v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+                return WindowInsets.CONSUMED;
+            } else {
+                v.setPadding(
+                        insets.getSystemWindowInsetLeft(),
+                        insets.getSystemWindowInsetTop(),
+                        insets.getSystemWindowInsetRight(),
+                        insets.getSystemWindowInsetBottom()
+                );
+                return insets.consumeSystemWindowInsets();
+            }
+        });
+
         webView = new WebView(this);
-        webView.setBackgroundColor(Color.parseColor("#090B10"));
+        webView.setBackgroundColor(Color.parseColor("#18191C"));
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
         WebSettings settings = webView.getSettings();
@@ -129,7 +165,12 @@ public class MainActivity extends Activity {
             }
         });
 
-        setContentView(webView);
+        root.addView(webView, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        ));
+        setContentView(root);
+        root.requestApplyInsets();
         webView.loadUrl("file:///android_asset/www/index.html");
     }
 

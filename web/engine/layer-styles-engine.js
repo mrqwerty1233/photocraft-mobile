@@ -1,12 +1,19 @@
 /* ============================================================================
- * ProStudio Mobile — Adobe Photoshop-Exact Layer Style (fx) Engine
- * Supports all 27 Photoshop Blend Modes, Blending Options (Fill Opacity, RGB
- * Channels, Knockout, Layer Mask Hides Effects, Blend If This/Underlying with
- * Split Feathered Handles), Global Light, 12 Contour Curves, 8 Patterns,
- * Multi-Stop Gradients (Linear, Radial, Angle, Reflected, Diamond, Shape Burst),
- * Bevel & Emboss (+ Contour & Texture), Stackable (+) Stroke / Inner Shadow /
- * Color Overlay / Gradient Overlay / Drop Shadow, Inner Glow, Satin,
- * Pattern Overlay, Outer Glow, and Live Style Presets.
+ * ProStudio Mobile — Adobe Photoshop-Exact Layer Style (fx) Engine v2
+ * Powered by Tight-BBox Accelerated Exact 2D Euclidean Distance Transform (EDT),
+ * Exact O(N) 3-Pass Separable Gaussian Blur, and True 3D Heightfield Normal
+ * Bevel & Emboss Shading.
+ *
+ * Supports all 27 Photoshop Blend Modes, Blending Options (Fill Opacity, true
+ * RGB Channel write masks, Knockout Shallow/Deep, Blend Interior Effects as
+ * Group, Transparency Shapes Layer, Layer Mask Hides Effects, Blend If
+ * This/Underlying with Split Feathered Handles), Global Light, 12 Contour
+ * Curves (+ Anti-aliased), 8 Procedural Patterns (+ Link with Layer), Multi-Stop
+ * Gradients (Linear, Radial, Angle, Reflected, Diamond, Shape Burst), True 3D
+ * Bevel & Emboss (+ Contour & Texture Bump Mapping), Stackable (+) Stroke /
+ * Inner Shadow / Color Overlay / Gradient Overlay / Drop Shadow, Inner Glow
+ * (Edge & Center), Satin, Pattern Overlay, Outer Glow (Softer & Precise), and
+ * Live Style Presets.
  * ============================================================================ */
 
 let NEXT_FX_INSTANCE_ID = 100;
@@ -168,13 +175,14 @@ const USER_DEFAULTS_STORAGE_KEY = 'prostudio_fx_defaults_v1';
 const USER_STYLES_STORAGE_KEY = 'prostudio_saved_styles_v1';
 
 const CONTOUR_LUT_CACHE = new Map();
+const EDT_INF = 1e12;
 
 function clamp01(v) {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
 function clamp8(v) {
-  return v < 0 ? 0 : v > 255 ? 255 : v | 0;
+  return v < 0 ? 0 : v > 255 ? 255 : Math.round(v);
 }
 
 function hexToRgb(hex) {
@@ -197,6 +205,286 @@ function getUserDefaultsMap() {
   } catch {
     return {};
   }
+}
+
+/* ============================================================================
+ * EXACT O(N) 2D EUCLIDEAN DISTANCE TRANSFORM (Felzenszwalb & Huttenlocher)
+ * ============================================================================ */
+
+function edt1d(f, d, n, v, z) {
+  let k = 0;
+  v[0] = 0;
+  z[0] = -1e20;
+  z[1] = 1e20;
+  for (let q = 1; q < n; q++) {
+    let s = (f[q] + q * q - (f[v[k]] + v[k] * v[k])) / (2 * (q - v[k]));
+    while (k > 0 && s <= z[k]) {
+      k--;
+      s = (f[q] + q * q - (f[v[k]] + v[k] * v[k])) / (2 * (q - v[k]));
+    }
+    k++;
+    v[k] = q;
+    z[k] = s;
+    z[k + 1] = 1e20;
+  }
+  k = 0;
+  for (let q = 0; q < n; q++) {
+    while (z[k + 1] < q) k++;
+    const dx = q - v[k];
+    d[q] = dx * dx + f[v[k]];
+  }
+}
+
+/**
+ * Computes exact Euclidean distance in pixels from every pixel to the nearest
+ * seed pixel (where fInit[i] === 0). Returns Float32Array(w * h).
+ */
+function computeEDT2D(fInit, w, h) {
+  const maxDim = Math.max(w, h) + 2;
+  const v = new Int32Array(maxDim);
+  const z = new Float64Array(maxDim + 1);
+  const colIn = new Float64Array(h);
+  const colOut = new Float64Array(h);
+  const tmp = new Float64Array(w * h);
+
+  // Pass 1: Columns
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) colIn[y] = fInit[y * w + x];
+    edt1d(colIn, colOut, h, v, z);
+    for (let y = 0; y < h; y++) tmp[y * w + x] = colOut[y];
+  }
+
+  // Pass 2: Rows
+  const rowIn = new Float64Array(w);
+  const rowOut = new Float64Array(w);
+  const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const off = y * w;
+    for (let x = 0; x < w; x++) rowIn[x] = tmp[off + x];
+    edt1d(rowIn, rowOut, w, v, z);
+    for (let x = 0; x < w; x++) {
+      const val = rowOut[x];
+      out[off + x] = val >= EDT_INF * 0.5 ? 1e6 : Math.sqrt(val);
+    }
+  }
+  return out;
+}
+
+/**
+ * Outer Euclidean distance from opaque pixels (alpha >= 0.5) with sub-pixel
+ * anti-aliased boundary refinement.
+ */
+function computeOuterEDT(alpha, w, h) {
+  const n = w * h;
+  const f = new Float64Array(n);
+  let hasSeed = false;
+  for (let i = 0; i < n; i++) {
+    if (alpha[i] >= 0.5) {
+      f[i] = 0;
+      hasSeed = true;
+    } else {
+      f[i] = EDT_INF;
+    }
+  }
+  if (!hasSeed) {
+    const empty = new Float32Array(n);
+    empty.fill(1e6);
+    return empty;
+  }
+  const dist = computeEDT2D(f, w, h);
+  // Sub-pixel anti-aliased boundary adjustment so thin glyphs & curves have silky smooth offsets
+  for (let i = 0; i < n; i++) {
+    const a = alpha[i];
+    if (a > 0 && a < 0.5 && dist[i] < 2.5) {
+      dist[i] = Math.max(0, dist[i] - a);
+    }
+  }
+  return dist;
+}
+
+/**
+ * Inner Euclidean distance from transparent boundary (alpha < 0.5), including
+ * a 1px virtual transparent frame around the buffer so full-canvas layers still
+ * get crisp Inner Shadow / Inner Glow / Inside Stroke / Inner Bevel along edges!
+ */
+function computeInnerEDT(alpha, w, h) {
+  const ew = w + 2;
+  const eh = h + 2;
+  const f = new Float64Array(ew * eh);
+  // 1px outer border is always transparent seed (0)
+  for (let y = 0; y < h; y++) {
+    const srcOff = y * w;
+    const dstOff = (y + 1) * ew + 1;
+    for (let x = 0; x < w; x++) {
+      f[dstOff + x] = alpha[srcOff + x] < 0.5 ? 0 : EDT_INF;
+    }
+  }
+  const extDist = computeEDT2D(f, ew, eh);
+  const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const srcOff = (y + 1) * ew + 1;
+    const dstOff = y * w;
+    for (let x = 0; x < w; x++) {
+      const a = alpha[dstOff + x];
+      let d = extDist[srcOff + x];
+      if (a >= 0.5 && a < 1.0 && d < 2.5) {
+        d = Math.max(0, d - (1 - a));
+      }
+      out[dstOff + x] = d;
+    }
+  }
+  return out;
+}
+
+/* ============================================================================
+ * EXACT O(N) 3-PASS SEPARABLE BOX-GAUSSIAN BLUR (Zero WebView filter bugs!)
+ * ============================================================================ */
+
+function boxBlurH(src, dst, w, h, r, edgeVal) {
+  if (r <= 0) {
+    dst.set(src);
+    return;
+  }
+  const inv = 1 / (2 * r + 1);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    let acc = 0;
+    // Left padded window [-r .. r]
+    for (let k = -r; k <= r; k++) {
+      if (k < 0) acc += edgeVal;
+      else if (k >= w) acc += edgeVal;
+      else acc += src[row + k];
+    }
+    dst[row] = acc * inv;
+    for (let x = 1; x < w; x++) {
+      const addIdx = x + r;
+      const subIdx = x - r - 1;
+      const addV = addIdx < w ? src[row + addIdx] : edgeVal;
+      const subV = subIdx >= 0 ? src[row + subIdx] : edgeVal;
+      acc += addV - subV;
+      dst[row + x] = acc * inv;
+    }
+  }
+}
+
+function boxBlurV(src, dst, w, h, r, edgeVal) {
+  if (r <= 0) {
+    dst.set(src);
+    return;
+  }
+  const inv = 1 / (2 * r + 1);
+  for (let x = 0; x < w; x++) {
+    let acc = 0;
+    for (let k = -r; k <= r; k++) {
+      if (k < 0 || k >= h) acc += edgeVal;
+      else acc += src[k * w + x];
+    }
+    dst[x] = acc * inv;
+    for (let y = 1; y < h; y++) {
+      const addY = y + r;
+      const subY = y - r - 1;
+      const addV = addY < h ? src[addY * w + x] : edgeVal;
+      const subV = subY >= 0 ? src[subY * w + x] : edgeVal;
+      acc += addV - subV;
+      dst[y * w + x] = acc * inv;
+    }
+  }
+}
+
+/**
+ * Smooth O(N) Gaussian blur on a Float32Array alpha/height buffer.
+ * Uses exact 1D Gaussian convolution for small sigma (< 1.4) and Kovesi's
+ * 3-pass sliding-window Gaussian approximation for larger sigma (any size up to 250px!).
+ */
+function blurFloatBuffer(src, w, h, sigma, edgeVal = 0) {
+  if (sigma <= 0.08) return new Float32Array(src);
+  const n = w * h;
+
+  if (sigma < 1.45) {
+    const r = Math.max(1, Math.ceil(sigma * 3));
+    const kernel = new Float32Array(2 * r + 1);
+    let sum = 0;
+    const inv2s2 = 1 / (2 * sigma * sigma);
+    for (let k = -r; k <= r; k++) {
+      const v = Math.exp(-(k * k) * inv2s2);
+      kernel[k + r] = v;
+      sum += v;
+    }
+    for (let i = 0; i < kernel.length; i++) kernel[i] /= sum;
+
+    const tmp = new Float32Array(n);
+    const out = new Float32Array(n);
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) {
+        let acc = 0;
+        for (let k = -r; k <= r; k++) {
+          const sx = x + k;
+          const sv = sx >= 0 && sx < w ? src[row + sx] : edgeVal;
+          acc += sv * kernel[k + r];
+        }
+        tmp[row + x] = acc;
+      }
+    }
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) {
+        let acc = 0;
+        for (let k = -r; k <= r; k++) {
+          const sy = y + k;
+          const sv = sy >= 0 && sy < h ? tmp[sy * w + x] : edgeVal;
+          acc += sv * kernel[k + r];
+        }
+        out[row + x] = acc;
+      }
+    }
+    return out;
+  }
+
+  // Kovesi 3-pass exact box widths for Gaussian sigma
+  const wIdeal = Math.sqrt((12 * sigma * sigma) / 3 + 1);
+  let wl = Math.floor(wIdeal);
+  if (wl % 2 === 0) wl--;
+  const wu = wl + 2;
+  const mIdeal = (12 * sigma * sigma - 3 * wl * wl - 12 * wl - 9) / (-4 * wl - 4);
+  const m = Math.round(mIdeal);
+
+  let bufA = new Float32Array(src);
+  let bufB = new Float32Array(n);
+  for (let pass = 0; pass < 3; pass++) {
+    const bw = pass < m ? wl : wu;
+    const rad = Math.max(0, (bw - 1) >> 1);
+    boxBlurH(bufA, bufB, w, h, rad, edgeVal);
+    boxBlurV(bufB, bufA, w, h, rad, edgeVal);
+  }
+  return bufA;
+}
+
+/**
+ * Evaluates a contour LUT with optional 3-tap Anti-Aliased curve smoothing.
+ */
+function sampleContour(lut, t, antiAliased) {
+  const x = clamp01(t);
+  if (!antiAliased) {
+    return lut[clamp8(x * 255)];
+  }
+  const c0 = lut[clamp8(clamp01(x - 0.012) * 255)];
+  const c1 = lut[clamp8(x * 255)];
+  const c2 = lut[clamp8(clamp01(x + 0.012) * 255)];
+  return c0 * 0.25 + c1 * 0.5 + c2 * 0.25;
+}
+
+/**
+ * Extracts normalized [0..1] alpha channel from a canvas region { x, y, w, h }.
+ */
+function extractAlphaRegion(canvas, region) {
+  const data = canvas.getContext('2d').getImageData(region.x, region.y, region.w, region.h).data;
+  const n = region.w * region.h;
+  const alpha = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    alpha[i] = data[i * 4 + 3] / 255;
+  }
+  return alpha;
 }
 
 export class LayerStylesEngine {
@@ -286,10 +574,19 @@ export class LayerStylesEngine {
     return [r, g, b, last.opacity ?? 1];
   }
 
-  static buildGradientLUT(stops) {
+  static buildGradientLUT(stops, reverse = false) {
+    const arr = Array.isArray(stops) && stops.length > 0
+      ? stops
+      : [
+          { pos: 0, color: '#ffffbe', opacity: 1 },
+          { pos: 1, color: '#ffffbe', opacity: 0 }
+        ];
+    const eff = reverse
+      ? arr.map((s) => ({ ...s, pos: 1 - s.pos })).sort((a, b) => a.pos - b.pos)
+      : arr;
     const lut = new Uint8ClampedArray(256 * 4);
     for (let i = 0; i < 256; i++) {
-      const [r, g, b, a] = LayerStylesEngine.sampleGradientStops(stops, i / 255);
+      const [r, g, b, a] = LayerStylesEngine.sampleGradientStops(eff, i / 255);
       lut[i * 4] = clamp8(r);
       lut[i * 4 + 1] = clamp8(g);
       lut[i * 4 + 2] = clamp8(b);
@@ -540,10 +837,6 @@ export class LayerStylesEngine {
     };
   }
 
-  /**
-   * Migrates & normalizes legacy single-object styles (e.g. styles.stroke, styles.dropShadow)
-   * into the full Photoshop stackable schema while preserving all legacy fields.
-   */
   static normalizeLayerStyles(rawStyles) {
     const def = LayerStylesEngine.createDefaultLayerStyles();
     if (!rawStyles) return def;
@@ -552,7 +845,6 @@ export class LayerStylesEngine {
     merged.effectsVisible = rawStyles.effectsVisible !== false;
     merged.effectsExpanded = rawStyles.effectsExpanded !== false;
 
-    // Blend Options (migrate legacy blendIfBlack / blendIfWhite)
     if (rawStyles.blendOptions) {
       const bo = rawStyles.blendOptions;
       merged.blendOptions = { ...merged.blendOptions, ...structuredClone(bo) };
@@ -571,7 +863,6 @@ export class LayerStylesEngine {
       }
     }
 
-    // Non-stackable singletons
     for (const singleKey of ['bevelEmboss', 'innerGlow', 'satin', 'patternOverlay', 'outerGlow']) {
       if (rawStyles[singleKey]) {
         merged[singleKey] = {
@@ -581,7 +872,6 @@ export class LayerStylesEngine {
       }
     }
 
-    // Stackable arrays (support both new plural arrays AND legacy singular keys!)
     for (const [singular, plural] of Object.entries(STACKABLE_EFFECT_KEYS)) {
       const rawArr = Array.isArray(rawStyles[plural])
         ? rawStyles[plural]
@@ -595,7 +885,6 @@ export class LayerStylesEngine {
           const out = { ...itemDef, ...structuredClone(item) };
           if (!out.id) out.id = `${singular}_${NEXT_FX_INSTANCE_ID++}`;
 
-          // Migrate legacy gradientColor1/2 or color1/2
           if (singular === 'stroke' && item.gradientColor1 && !item.gradientStops) {
             out.gradientStops = [
               { pos: 0, color: item.gradientColor1, opacity: 1 },
@@ -698,7 +987,7 @@ export class LayerStylesEngine {
         s.gradientOverlays[0].angle = 115;
         s.dropShadows[0].enabled = true;
         s.dropShadows[0].distance = 10;
-        s.dropShadows[0].size = 16;
+        s.dropShadows[0].size = 14;
         s.dropShadows[0].opacity = 0.65;
       }),
       mk('Double Sticker Stroke', 'Dual Stacked Strokes + Shadow', (s) => {
@@ -714,7 +1003,7 @@ export class LayerStylesEngine {
         s.strokes.push(s2);
         s.dropShadows[0].enabled = true;
         s.dropShadows[0].distance = 12;
-        s.dropShadows[0].size = 18;
+        s.dropShadows[0].size = 16;
         s.dropShadows[0].opacity = 0.55;
       }),
       mk('Frosted Glass Emboss', 'Inner Glow + Stroke + Bevel', (s) => {
@@ -733,8 +1022,8 @@ export class LayerStylesEngine {
         s.strokes[0].opacity = 0.7;
         s.strokes[0].color = '#ffffff';
         s.dropShadows[0].enabled = true;
-        s.dropShadows[0].distance = 12;
-        s.dropShadows[0].size = 22;
+        s.dropShadows[0].distance = 10;
+        s.dropShadows[0].size = 18;
         s.dropShadows[0].opacity = 0.45;
       }),
       mk('Chrome Satin Badge', 'Chrome Gradient + Satin + Contour', (s) => {
@@ -751,7 +1040,7 @@ export class LayerStylesEngine {
         s.bevelEmboss.size = 8;
         s.dropShadows[0].enabled = true;
         s.dropShadows[0].distance = 8;
-        s.dropShadows[0].size = 14;
+        s.dropShadows[0].size = 12;
       }),
       mk('Soft Sunset Halo', 'Gradient Outer Glow + Inner Shadow', (s) => {
         s.outerGlow.enabled = true;
@@ -762,7 +1051,7 @@ export class LayerStylesEngine {
           { pos: 1, color: '#ec4899', opacity: 0 }
         ];
         s.outerGlow.opacity = 0.85;
-        s.outerGlow.size = 26;
+        s.outerGlow.size = 24;
         s.outerGlow.range = 60;
         s.innerShadows[0].enabled = true;
         s.innerShadows[0].color = '#7c2d12';
@@ -815,8 +1104,8 @@ export class LayerStylesEngine {
    * PATTERN & MULTI-STOP GRADIENT RENDERERS
    * ========================================================================== */
 
-  static createProceduralPattern(ctx, kind = 'stripes', scalePct = 100, angleDeg = 0) {
-    const s = Math.max(6, Math.round(18 * Math.max(0.1, scalePct / 100)));
+  static createPatternTileCanvas(kind = 'stripes', scalePct = 100) {
+    const s = Math.max(6, Math.min(256, Math.round(18 * Math.max(0.1, scalePct / 100))));
     const pCanvas = document.createElement('canvas');
     pCanvas.width = s;
     pCanvas.height = s;
@@ -824,44 +1113,44 @@ export class LayerStylesEngine {
 
     if (kind === 'checker') {
       const h = s / 2;
-      pCtx.fillStyle = 'rgba(255,255,255,0.55)';
+      pCtx.fillStyle = 'rgba(255,255,255,0.65)';
       pCtx.fillRect(0, 0, h, h);
       pCtx.fillRect(h, h, h, h);
-      pCtx.fillStyle = 'rgba(0,0,0,0.55)';
+      pCtx.fillStyle = 'rgba(0,0,0,0.65)';
       pCtx.fillRect(h, 0, h, h);
       pCtx.fillRect(0, h, h, h);
     } else if (kind === 'dots') {
-      pCtx.fillStyle = 'rgba(255,255,255,0.72)';
+      pCtx.fillStyle = 'rgba(255,255,255,0.8)';
       pCtx.beginPath();
-      pCtx.arc(s / 2, s / 2, Math.max(1.5, s * 0.27), 0, Math.PI * 2);
+      pCtx.arc(s / 2, s / 2, Math.max(1.5, s * 0.28), 0, Math.PI * 2);
       pCtx.fill();
     } else if (kind === 'grid') {
-      pCtx.strokeStyle = 'rgba(255,255,255,0.55)';
+      pCtx.strokeStyle = 'rgba(255,255,255,0.65)';
       pCtx.lineWidth = Math.max(1, s * 0.08);
       pCtx.strokeRect(0, 0, s, s);
     } else if (kind === 'brushedMetal') {
       const img = pCtx.createImageData(s, s);
       const d = img.data;
       for (let y = 0; y < s; y++) {
-        const rowTone = 110 + hashFast(1, y, 7) * 90;
+        const rowTone = 105 + hashFast(1, y, 7) * 95;
         for (let x = 0; x < s; x++) {
-          const v = clamp8(rowTone + (hashFast(x, y, 13) - 0.5) * 35);
+          const v = clamp8(rowTone + (hashFast(x, y, 13) - 0.5) * 38);
           const idx = (y * s + x) * 4;
           d[idx] = v;
           d[idx + 1] = v;
           d[idx + 2] = clamp8(v + 6);
-          d[idx + 3] = 215;
+          d[idx + 3] = 225;
         }
       }
       pCtx.putImageData(img, 0, 0);
     } else if (kind === 'wovenCanvas') {
       pCtx.fillStyle = '#8b8f99';
       pCtx.fillRect(0, 0, s, s);
-      pCtx.fillStyle = 'rgba(255,255,255,0.35)';
+      pCtx.fillStyle = 'rgba(255,255,255,0.42)';
       pCtx.fillRect(0, 0, s, Math.max(1, s * 0.35));
-      pCtx.fillStyle = 'rgba(0,0,0,0.28)';
+      pCtx.fillStyle = 'rgba(0,0,0,0.34)';
       pCtx.fillRect(0, 0, Math.max(1, s * 0.35), s);
-      pCtx.fillStyle = 'rgba(255,255,255,0.25)';
+      pCtx.fillStyle = 'rgba(255,255,255,0.30)';
       pCtx.fillRect(s * 0.5, s * 0.5, s * 0.5, s * 0.35);
     } else if (kind === 'carbonFiber') {
       pCtx.fillStyle = '#1f242d';
@@ -884,30 +1173,40 @@ export class LayerStylesEngine {
           d[idx] = v;
           d[idx + 1] = v;
           d[idx + 2] = v;
-          d[idx + 3] = 190;
+          d[idx + 3] = 210;
         }
       }
       pCtx.putImageData(img, 0, 0);
     } else {
-      // Diagonal stripes
-      pCtx.strokeStyle = 'rgba(255,255,255,0.58)';
+      pCtx.strokeStyle = 'rgba(255,255,255,0.68)';
       pCtx.lineWidth = Math.max(2, s * 0.25);
       pCtx.beginPath();
       pCtx.moveTo(-s * 0.2, s * 1.2);
       pCtx.lineTo(s * 1.2, -s * 0.2);
       pCtx.stroke();
     }
+    return pCanvas;
+  }
 
+  static createProceduralPattern(ctx, kind = 'stripes', scalePct = 100, angleDeg = 0, offsetX = 0, offsetY = 0) {
+    const pCanvas = LayerStylesEngine.createPatternTileCanvas(kind, scalePct);
     const pat = ctx.createPattern(pCanvas, 'repeat');
-    if (pat && angleDeg && pat.setTransform && typeof DOMMatrix !== 'undefined') {
+    if (pat && pat.setTransform && typeof DOMMatrix !== 'undefined' && (angleDeg || offsetX || offsetY)) {
       const m = new DOMMatrix();
-      m.rotateSelf(angleDeg);
+      if (offsetX || offsetY) m.translateSelf(offsetX, offsetY);
+      if (angleDeg) m.rotateSelf(angleDeg);
       pat.setTransform(m);
     }
     return pat;
   }
 
-  static fillGradientCanvas(ctx, width, height, opts, bbox = null) {
+  /**
+   * Fills a local canvas of size (rw x rh) mapped at document origin (ox, oy)
+   * with a Photoshop-exact Linear / Radial / Angle / Reflected / Diamond gradient.
+   * Uses exact directional bounding-box projection so vertical gradients on wide
+   * text span cleanly from the exact top to the exact bottom of the glyphs!
+   */
+  static fillGradientRegion(ctx, rw, rh, originX, originY, docW, docH, opts, layerBbox = null) {
     const rawStops = Array.isArray(opts.gradientStops) && opts.gradientStops.length > 0
       ? opts.gradientStops
       : [
@@ -918,10 +1217,11 @@ export class LayerStylesEngine {
       ? rawStops.map((s) => ({ ...s, pos: 1 - s.pos })).sort((a, b) => a.pos - b.pos)
       : [...rawStops].sort((a, b) => a.pos - b.pos);
 
-    const alignBox = opts.alignWithLayer !== false && bbox ? bbox : { x: 0, y: 0, w: width, h: height };
+    const alignBox = opts.alignWithLayer !== false && layerBbox ? layerBbox : { x: 0, y: 0, w: docW, h: docH };
     const scale = Math.max(0.1, (opts.scale ?? 100) / 100);
-    const cx = alignBox.x + alignBox.w * (0.5 + (opts.offsetX || 0) / 100);
-    const cy = alignBox.y + alignBox.h * (0.5 + (opts.offsetY || 0) / 100);
+    // Center in local region coordinates
+    const cx = alignBox.x + alignBox.w * (0.5 + (opts.offsetX || 0) / 100) - originX;
+    const cy = alignBox.y + alignBox.h * (0.5 + (opts.offsetY || 0) / 100) - originY;
     const spanW = Math.max(1, alignBox.w);
     const spanH = Math.max(1, alignBox.h);
     const style = opts.style || 'linear';
@@ -947,111 +1247,113 @@ export class LayerStylesEngine {
       const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(1, r));
       addStopsToGrad(grad, false);
       ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, width, height);
+      ctx.fillRect(0, 0, rw, rh);
     } else if (style === 'angle' && typeof ctx.createConicGradient === 'function') {
       const rad = (-(opts.angle ?? 90) * Math.PI) / 180;
       const grad = ctx.createConicGradient(rad, cx, cy);
       addStopsToGrad(grad, false);
       ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, width, height);
+      ctx.fillRect(0, 0, rw, rh);
     } else if (style === 'diamond' || style === 'angle') {
-      // Mathematical Diamond (L1 rotated norm) or Angle fallback inside alignBox
-      const lut = LayerStylesEngine.buildGradientLUT(stops);
+      const lut = LayerStylesEngine.buildGradientLUT(stops, false);
       const rad = ((opts.angle ?? 90) * Math.PI) / 180;
       const cosA = Math.cos(rad);
       const sinA = Math.sin(rad);
       const maxD = Math.max(1, (Math.max(spanW, spanH) / 2) * scale);
-      const bx0 = Math.max(0, Math.floor(alignBox.x));
-      const by0 = Math.max(0, Math.floor(alignBox.y));
-      const bw = Math.min(width - bx0, Math.ceil(alignBox.w));
-      const bh = Math.min(height - by0, Math.ceil(alignBox.h));
-      if (bw > 0 && bh > 0) {
-        const img = ctx.createImageData(bw, bh);
-        const d = img.data;
-        for (let py = 0; py < bh; py++) {
-          const dy = by0 + py - cy;
-          for (let px = 0; px < bw; px++) {
-            const dx = bx0 + px - cx;
-            let t;
-            if (style === 'diamond') {
-              const rx = Math.abs(dx * cosA + dy * sinA);
-              const ry = Math.abs(-dx * sinA + dy * cosA);
-              t = clamp01((rx + ry) / maxD);
-            } else {
-              let ang = Math.atan2(dy, dx) + rad;
-              t = ((ang / (Math.PI * 2)) % 1 + 1) % 1;
-            }
-            const li = clamp8(Math.round(t * 255)) * 4;
-            const o = (py * bw + px) * 4;
-            d[o] = lut[li];
-            d[o + 1] = lut[li + 1];
-            d[o + 2] = lut[li + 2];
-            d[o + 3] = lut[li + 3];
+      const img = ctx.createImageData(rw, rh);
+      const d = img.data;
+      for (let py = 0; py < rh; py++) {
+        const dy = py - cy;
+        for (let px = 0; px < rw; px++) {
+          const dx = px - cx;
+          let t;
+          if (style === 'diamond') {
+            const rx = Math.abs(dx * cosA + dy * sinA);
+            const ry = Math.abs(-dx * sinA + dy * cosA);
+            t = clamp01((rx + ry) / maxD);
+          } else {
+            const ang = Math.atan2(dy, dx) + rad;
+            t = ((ang / (Math.PI * 2)) % 1 + 1) % 1;
           }
+          const li = clamp8(t * 255) * 4;
+          const o = (py * rw + px) * 4;
+          d[o] = lut[li];
+          d[o + 1] = lut[li + 1];
+          d[o + 2] = lut[li + 2];
+          d[o + 3] = lut[li + 3];
         }
-        ctx.putImageData(img, bx0, by0);
       }
+      ctx.putImageData(img, 0, 0);
     } else {
-      // Linear or Reflected
+      // Exact Photoshop Linear / Reflected bounding-box projection length!
+      // At 90° (vertical) -> spanH/2; at 0° (horizontal) -> spanW/2; exact for every angle!
       const rad = ((opts.angle ?? 90) * Math.PI) / 180;
-      const halfLen = (Math.hypot(spanW, spanH) / 2) * scale;
-      const dx = Math.cos(rad) * halfLen;
-      const dy = -Math.sin(rad) * halfLen;
+      const cosA = Math.cos(rad);
+      const sinA = Math.sin(rad);
+      const halfLen = (Math.abs(spanW * cosA) + Math.abs(spanH * sinA)) * 0.5 * scale;
+      const dx = cosA * halfLen;
+      const dy = -sinA * halfLen;
       const grad = ctx.createLinearGradient(cx - dx, cy - dy, cx + dx, cy + dy);
       addStopsToGrad(grad, style === 'reflected');
       ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, width, height);
+      ctx.fillRect(0, 0, rw, rh);
     }
 
-    // Subtle Dither anti-banding pass when checked
     if (opts.dither) {
-      const bx0 = Math.max(0, Math.floor(alignBox.x));
-      const by0 = Math.max(0, Math.floor(alignBox.y));
-      const bw = Math.min(width - bx0, Math.ceil(alignBox.w));
-      const bh = Math.min(height - by0, Math.ceil(alignBox.h));
-      if (bw > 0 && bh > 0) {
-        const img = ctx.getImageData(bx0, by0, bw, bh);
-        const d = img.data;
-        for (let py = 0; py < bh; py++) {
-          for (let px = 0; px < bw; px++) {
-            const o = (py * bw + px) * 4;
-            if (d[o + 3] === 0) continue;
-            const n = (hashFast(px, py, 37) - 0.5) * 4;
-            d[o] = clamp8(d[o] + n);
-            d[o + 1] = clamp8(d[o + 1] + n);
-            d[o + 2] = clamp8(d[o + 2] + n);
-          }
+      const img = ctx.getImageData(0, 0, rw, rh);
+      const d = img.data;
+      for (let py = 0; py < rh; py++) {
+        for (let px = 0; px < rw; px++) {
+          const o = (py * rw + px) * 4;
+          if (d[o + 3] === 0) continue;
+          const n = (hashFast(originX + px, originY + py, 37) - 0.5) * 3.5;
+          d[o] = clamp8(d[o] + n);
+          d[o + 1] = clamp8(d[o + 1] + n);
+          d[o + 2] = clamp8(d[o + 2] + n);
         }
-        ctx.putImageData(img, bx0, by0);
       }
+      ctx.putImageData(img, 0, 0);
     }
   }
 
+  static fillGradientCanvas(ctx, width, height, opts, bbox = null) {
+    LayerStylesEngine.fillGradientRegion(ctx, width, height, 0, 0, width, height, opts, bbox);
+  }
+
   /* ==========================================================================
-   * FULL 27-MODE PHOTOSHOP COMPOSITOR HELPER
+   * FULL 27-MODE PHOTOSHOP COMPOSITOR HELPER (Supports Full or Local Region!)
    * ========================================================================== */
 
-  static compositeCanvas(destCtx, srcCanvas, blendMode = 'source-over', alpha = 1, region = null) {
-    if (alpha <= 0) return;
+  static compositeRegion(destCtx, srcCanvas, dstX, dstY, blendMode = 'source-over', alpha = 1) {
+    if (alpha <= 0.0005) return;
+    const sw = srcCanvas.width;
+    const sh = srcCanvas.height;
+    if (sw <= 0 || sh <= 0) return;
+
     if (NATIVE_CANVAS_MODES.has(blendMode)) {
       destCtx.save();
       destCtx.globalCompositeOperation = blendMode;
       destCtx.globalAlpha = clamp01(alpha);
-      destCtx.drawImage(srcCanvas, 0, 0);
+      destCtx.drawImage(srcCanvas, dstX, dstY);
       destCtx.restore();
       return;
     }
 
-    const w = destCtx.canvas.width;
-    const h = destCtx.canvas.height;
-    const rx = region ? Math.max(0, region.x | 0) : 0;
-    const ry = region ? Math.max(0, region.y | 0) : 0;
-    const rw = region ? Math.min(w - rx, Math.ceil(region.w)) : w;
-    const rh = region ? Math.min(h - ry, Math.ceil(region.h)) : h;
+    const dw = destCtx.canvas.width;
+    const dh = destCtx.canvas.height;
+    const x0 = Math.max(0, Math.floor(dstX));
+    const y0 = Math.max(0, Math.floor(dstY));
+    const x1 = Math.min(dw, Math.ceil(dstX + sw));
+    const y1 = Math.min(dh, Math.ceil(dstY + sh));
+    const rw = x1 - x0;
+    const rh = y1 - y0;
     if (rw <= 0 || rh <= 0) return;
 
-    const dstImg = destCtx.getImageData(rx, ry, rw, rh);
-    const srcImg = srcCanvas.getContext('2d').getImageData(rx, ry, rw, rh);
+    const sx0 = x0 - Math.floor(dstX);
+    const sy0 = y0 - Math.floor(dstY);
+
+    const dstImg = destCtx.getImageData(x0, y0, rw, rh);
+    const srcImg = srcCanvas.getContext('2d').getImageData(sx0, sy0, rw, rh);
     const dd = dstImg.data;
     const sd = srcImg.data;
 
@@ -1085,7 +1387,7 @@ export class LayerStylesEngine {
         if (sa0 <= 0.001) continue;
 
         if (blendMode === 'dissolve') {
-          if (hashFast(rx + px, ry + py, 53) > sa0) continue;
+          if (hashFast(x0 + px, y0 + py, 53) > sa0) continue;
           dd[i] = sd[i];
           dd[i + 1] = sd[i + 1];
           dd[i + 2] = sd[i + 2];
@@ -1124,11 +1426,32 @@ export class LayerStylesEngine {
         dd[i + 3] = clamp8(outA * 255);
       }
     }
-    destCtx.putImageData(dstImg, rx, ry);
+    destCtx.putImageData(dstImg, x0, y0);
+  }
+
+  static compositeCanvas(destCtx, srcCanvas, blendMode = 'source-over', alpha = 1, region = null) {
+    if (alpha <= 0.0005) return;
+    if (NATIVE_CANVAS_MODES.has(blendMode)) {
+      destCtx.save();
+      destCtx.globalCompositeOperation = blendMode;
+      destCtx.globalAlpha = clamp01(alpha);
+      destCtx.drawImage(srcCanvas, 0, 0);
+      destCtx.restore();
+      return;
+    }
+    if (region) {
+      const tmp = document.createElement('canvas');
+      tmp.width = region.w;
+      tmp.height = region.h;
+      tmp.getContext('2d').drawImage(srcCanvas, region.x, region.y, region.w, region.h, 0, 0, region.w, region.h);
+      LayerStylesEngine.compositeRegion(destCtx, tmp, region.x, region.y, blendMode, alpha);
+      return;
+    }
+    LayerStylesEngine.compositeRegion(destCtx, srcCanvas, 0, 0, blendMode, alpha);
   }
 
   /* ==========================================================================
-   * TIGHT ALPHA BOUNDING BOX HELPER (Keeps Pixel FX Fast!)
+   * TIGHT ALPHA BOUNDING BOX HELPER (Exact & Fast!)
    * ========================================================================== */
 
   static computeAlphaBounds(canvas) {
@@ -1136,12 +1459,11 @@ export class LayerStylesEngine {
     const h = canvas.height;
     const data = canvas.getContext('2d').getImageData(0, 0, w, h).data;
     let minX = w, minY = h, maxX = -1, maxY = -1;
-    // Fast stride-2 scan with 1px expansion keeps bounds calculation < 1.5ms even at 1080p!
-    const step = w * h > 500000 ? 2 : 1;
+    const step = w * h > 800000 ? 2 : 1;
     for (let y = 0; y < h; y += step) {
       const row = y * w;
       for (let x = 0; x < w; x += step) {
-        if (data[(row + x) * 4 + 3] > 2) {
+        if (data[(row + x) * 4 + 3] > 1) {
           if (x < minX) minX = x;
           if (x > maxX) maxX = x;
           if (y < minY) minY = y;
@@ -1166,51 +1488,59 @@ export class LayerStylesEngine {
   }
 
   /**
-   * Shape an effect alpha canvas in-place using Photoshop's exact Spread/Choke,
-   * Contour Curve LUT, Range, Noise, Solid vs Gradient coloring, and Jitter.
+   * Builds a solid-tinted RGBA canvas from a Float32Array [0..1] alpha buffer
+   * with Contour LUT, Noise, Solid or Gradient coloring, and Jitter.
    */
-  static shapeEffectAlphaCanvas(canvas, region, opts) {
-    const ctx = canvas.getContext('2d');
-    const { x, y, w, h } = region;
-    if (w <= 0 || h <= 0) return;
-
-    const img = ctx.getImageData(x, y, w, h);
+  static buildColoredEffectCanvas(alphaBuf, rw, rh, originX, originY, opts) {
+    const c = document.createElement('canvas');
+    c.width = rw;
+    c.height = rh;
+    const ctx = c.getContext('2d');
+    const img = ctx.createImageData(rw, rh);
     const d = img.data;
-    const spread = clamp01((opts.spread ?? 0) / 100);
-    const range = Math.max(0.05, (opts.range ?? 50) / 100);
+
+    const contourLut = LayerStylesEngine.getContourLUT(opts.contour || 'linear');
+    const antiAliased = Boolean(opts.antiAliased);
     const noise = clamp01((opts.noise ?? 0) / 100);
     const jitter = clamp01((opts.jitter ?? 0) / 100);
-    const contourLut = LayerStylesEngine.getContourLUT(opts.contour || 'linear');
     const isGradient = opts.colorType === 'gradient' && Array.isArray(opts.gradientStops);
-    const gradLut = isGradient ? LayerStylesEngine.buildGradientLUT(opts.gradientStops) : null;
-    const [sr, sg, sb] = hexToRgb(opts.color || '#ffffbe');
+    const gradLut = isGradient ? LayerStylesEngine.buildGradientLUT(opts.gradientStops, false) : null;
+    const [sr, sg, sb] = hexToRgb(opts.color || '#000000');
     const seed = opts.seed || 31;
+    const knockoutAlpha = opts.knockoutAlpha || null;
+    const clipAlpha = opts.clipAlpha || null;
 
-    // Spread/Choke compresses the upper ramp so edges harden like Photoshop Spread/Choke
-    const rampDiv = Math.max(0.04, (1 - spread * 0.92) * (range * 2));
+    for (let py = 0; py < rh; py++) {
+      const row = py * rw;
+      for (let px = 0; px < rw; px++) {
+        const p = row + px;
+        let a = alphaBuf[p];
+        if (a <= 0.0015) continue;
 
-    for (let py = 0; py < h; py++) {
-      for (let px = 0; px < w; px++) {
-        const i = (py * w + px) * 4;
-        const aRaw = d[i + 3] / 255;
-        if (aRaw <= 0.002) continue;
+        let t = sampleContour(contourLut, clamp01(a), antiAliased);
+        if (t <= 0.0015) continue;
 
-        let t = clamp01(aRaw / rampDiv);
-        // Apply Contour LUT
-        t = contourLut[clamp8(Math.round(t * 255))];
-
-        // Apply Noise (Photoshop multiplicative alpha grain)
         if (noise > 0) {
-          const n = hashFast(x + px, y + py, seed);
-          t = clamp01(t * (1 - noise + n * noise * 1.4));
+          const n = hashFast(originX + px, originY + py, seed);
+          t = clamp01(t * (1 - noise + n * noise * 1.45));
         }
 
+        if (knockoutAlpha) {
+          t *= 1 - knockoutAlpha[p];
+          if (t <= 0.0015) continue;
+        }
+        if (clipAlpha) {
+          t *= clipAlpha[p];
+          if (t <= 0.0015) continue;
+        }
+
+        const i = p * 4;
         if (isGradient && gradLut) {
-          let gt = 1 - t; // 0 = inner/dense edge, 1 = outer transparent edge
+          let gt = 1 - clamp01(t); // 0 = dense inner core, 1 = outer edge
           if (jitter > 0) {
-            gt = clamp01(gt + (hashFast(x + px, y + py, seed + 19) - 0.5) * jitter * 0.85);
+            gt = clamp01(gt + (hashFast(originX + px, originY + py, seed + 19) - 0.5) * jitter * 0.85);
           }
-          const gi = clamp8(Math.round(gt * 255)) * 4;
+          const gi = clamp8(gt * 255) * 4;
           d[i] = gradLut[gi];
           d[i + 1] = gradLut[gi + 1];
           d[i + 2] = gradLut[gi + 2];
@@ -1223,41 +1553,12 @@ export class LayerStylesEngine {
         }
       }
     }
-    ctx.putImageData(img, x, y);
-  }
-
-  /**
-   * Builds a solid-tinted silhouette copy of srcCanvas.
-   */
-  static makeSilhouette(srcCanvas, colorHex, width, height) {
-    const c = document.createElement('canvas');
-    c.width = width;
-    c.height = height;
-    const ctx = c.getContext('2d');
-    ctx.drawImage(srcCanvas, 0, 0);
-    ctx.globalCompositeOperation = 'source-in';
-    ctx.fillStyle = colorHex || '#ffffff';
-    ctx.fillRect(0, 0, width, height);
-    return c;
-  }
-
-  /**
-   * Builds an inverted silhouette (opaque everywhere EXCEPT srcCanvas alpha).
-   */
-  static makeInvertedSilhouette(srcCanvas, colorHex, width, height) {
-    const c = document.createElement('canvas');
-    c.width = width;
-    c.height = height;
-    const ctx = c.getContext('2d');
-    ctx.fillStyle = colorHex || '#000000';
-    ctx.fillRect(0, 0, width, height);
-    ctx.globalCompositeOperation = 'destination-out';
-    ctx.drawImage(srcCanvas, 0, 0);
+    ctx.putImageData(img, 0, 0);
     return c;
   }
 
   /* ==========================================================================
-   * MAIN PHOTOSHOP LAYER STYLE RENDERER
+   * MAIN PHOTOSHOP LAYER STYLE RENDERER (Tight-BBox + Exact EDT + 3D Bevel!)
    * ========================================================================== */
 
   static renderLayerWithEffects(layer, destCtx, srcCanvas, width, height, globalLight = null) {
@@ -1267,41 +1568,83 @@ export class LayerStylesEngine {
     const gAltitude = globalLight?.altitude ?? 30;
     const layerOpacity = clamp01(layer.opacity ?? 1);
     const fillOpacity = clamp01(layer.fill ?? 1);
+    const effectsOn = fx.effectsVisible !== false;
 
     const bbox = LayerStylesEngine.computeAlphaBounds(srcCanvas);
     if (!bbox) return;
 
     // ------------------------------------------------------------------------
-    // 0. BLENDING OPTIONS: RGB Channel Restrict + Blend If (This & Underlying)
+    // 0. CHANNEL RESTRICT WRAPPER (True Photoshop RGB Channel Isolation!)
+    // When R, G, or B is unchecked, we render the complete layer+effects onto a
+    // copy of the destination over the full effect envelope, then copy back ONLY
+    // the enabled RGB channels so unchecked channels preserve underlying pixels!
     // ------------------------------------------------------------------------
-    let processedSrc = srcCanvas;
-    const needsBlendOpt = LayerStylesEngine.hasActiveBlendOptions(fx);
-    if (needsBlendOpt) {
-      const c = document.createElement('canvas');
-      c.width = width;
-      c.height = height;
-      const cCtx = c.getContext('2d');
-      cCtx.drawImage(srcCanvas, 0, 0);
+    const rOn = bo.channels?.r !== false;
+    const gOn = bo.channels?.g !== false;
+    const bOn = bo.channels?.b !== false;
+    const restrictChannels = !rOn || !gOn || !bOn;
 
-      const srcImg = cCtx.getImageData(bbox.x, bbox.y, bbox.w, bbox.h);
+    let targetCtx = destCtx;
+    let chanWrap = null;
+    if (restrictChannels) {
+      let maxPad = 8;
+      if (effectsOn) {
+        if (fx.outerGlow?.enabled) maxPad = Math.max(maxPad, (fx.outerGlow.size ?? 7) * 1.6 + 8);
+        if (fx.bevelEmboss?.enabled) maxPad = Math.max(maxPad, (fx.bevelEmboss.size ?? 5) + (fx.bevelEmboss.soften ?? 0) + 8);
+        for (const st of fx.strokes || []) {
+          if (st?.enabled) maxPad = Math.max(maxPad, (st.size ?? 3) + 6);
+        }
+        for (const ds of fx.dropShadows || []) {
+          if (ds?.enabled) maxPad = Math.max(maxPad, (ds.distance ?? 5) + (ds.size ?? 5) * 1.6 + 8);
+        }
+      }
+      const env = LayerStylesEngine.expandRegion(bbox, maxPad, width, height);
+      const wrapCanvas = document.createElement('canvas');
+      wrapCanvas.width = width;
+      wrapCanvas.height = height;
+      const wCtx = wrapCanvas.getContext('2d');
+      wCtx.drawImage(destCtx.canvas, env.x, env.y, env.w, env.h, env.x, env.y, env.w, env.h);
+      chanWrap = { canvas: wrapCanvas, env };
+      targetCtx = wCtx;
+    }
+
+    // ------------------------------------------------------------------------
+    // 0b. BLENDING OPTIONS: Blend If (This & Underlying) + Knockout
+    // ------------------------------------------------------------------------
+    const hasBlendIf =
+      (bo.thisBlackMin ?? 0) > 0 ||
+      (bo.thisBlackMax ?? 0) > 0 ||
+      (bo.thisWhiteMin ?? 255) < 255 ||
+      (bo.thisWhiteMax ?? 255) < 255 ||
+      (bo.underBlackMin ?? 0) > 0 ||
+      (bo.underBlackMax ?? 0) > 0 ||
+      (bo.underWhiteMin ?? 255) < 255 ||
+      (bo.underWhiteMax ?? 255) < 255;
+
+    // Crop tight source canvas for base pixels & alpha
+    const baseSrc = document.createElement('canvas');
+    baseSrc.width = bbox.w;
+    baseSrc.height = bbox.h;
+    const baseSrcCtx = baseSrc.getContext('2d');
+    baseSrcCtx.drawImage(srcCanvas, bbox.x, bbox.y, bbox.w, bbox.h, 0, 0, bbox.w, bbox.h);
+
+    // Compute Blend If attenuation factor buffer over bbox (reused for base & optional interior group)
+    let blendIfMask = null;
+    if (hasBlendIf) {
+      const srcImg = baseSrcCtx.getImageData(0, 0, bbox.w, bbox.h);
       const sd = srcImg.data;
       const needUnder =
         (bo.underBlackMin ?? 0) > 0 ||
         (bo.underBlackMax ?? 0) > 0 ||
         (bo.underWhiteMin ?? 255) < 255 ||
         (bo.underWhiteMax ?? 255) < 255;
-      const underData = needUnder ? destCtx.getImageData(bbox.x, bbox.y, bbox.w, bbox.h).data : null;
+      const underData = needUnder ? targetCtx.getImageData(bbox.x, bbox.y, bbox.w, bbox.h).data : null;
 
-      const rOn = bo.channels?.r !== false;
-      const gOn = bo.channels?.g !== false;
-      const bOn = bo.channels?.b !== false;
       const ch = bo.blendIfChannel || 'gray';
-
       const tBMin = bo.thisBlackMin ?? 0;
       const tBMax = Math.max(tBMin, bo.thisBlackMax ?? tBMin);
       const tWMax = bo.thisWhiteMax ?? 255;
       const tWMin = Math.min(tWMax, bo.thisWhiteMin ?? tWMax);
-
       const uBMin = bo.underBlackMin ?? 0;
       const uBMax = Math.max(uBMin, bo.underBlackMax ?? uBMin);
       const uWMax = bo.underWhiteMax ?? 255;
@@ -1313,7 +1656,6 @@ export class LayerStylesEngine {
         if (ch === 'blue') return arr[idx + 2];
         return 0.299 * arr[idx] + 0.587 * arr[idx + 1] + 0.114 * arr[idx + 2];
       };
-
       const rampFactor = (val, bMin, bMax, wMin, wMax) => {
         let f = 1;
         if (bMin > 0 || bMax > 0) {
@@ -1327,34 +1669,83 @@ export class LayerStylesEngine {
         return f;
       };
 
-      for (let i = 0; i < sd.length; i += 4) {
+      blendIfMask = new Float32Array(bbox.w * bbox.h);
+      for (let p = 0, i = 0; i < sd.length; p++, i += 4) {
         if (sd[i + 3] === 0) continue;
         let f = rampFactor(sampleVal(sd, i), tBMin, tBMax, tWMin, tWMax);
         if (f > 0 && underData && underData[i + 3] > 0) {
           f *= rampFactor(sampleVal(underData, i), uBMin, uBMax, uWMin, uWMax);
         }
+        blendIfMask[p] = f;
         sd[i + 3] = clamp8(sd[i + 3] * f);
-        if (!rOn) sd[i] = 0;
-        if (!gOn) sd[i + 1] = 0;
-        if (!bOn) sd[i + 2] = 0;
       }
-      cCtx.putImageData(srcImg, bbox.x, bbox.y);
-      processedSrc = c;
+      baseSrcCtx.putImageData(srcImg, 0, 0);
     }
+
+    // Source alpha used for shaping effects:
+    // If Blend Interior as Group is checked or Blend If is active, baseSrc reflects Blend If;
+    // otherwise original srcCanvas shapes interior overlays while Blend If only hides base pixels.
+    const shapeCanvas =
+      hasBlendIf && !bo.blendInteriorAsGroup
+        ? (() => {
+            const c = document.createElement('canvas');
+            c.width = bbox.w;
+            c.height = bbox.h;
+            c.getContext('2d').drawImage(srcCanvas, bbox.x, bbox.y, bbox.w, bbox.h, 0, 0, bbox.w, bbox.h);
+            return c;
+          })()
+        : baseSrc;
 
     // Knockout Shallow/Deep cuts out underlying layers with layer silhouette
     if (bo.knockout && bo.knockout !== 'none' && fillOpacity < 1) {
-      destCtx.save();
-      destCtx.globalCompositeOperation = 'destination-out';
-      destCtx.globalAlpha = 1 - fillOpacity;
-      destCtx.drawImage(processedSrc, 0, 0);
-      destCtx.restore();
+      targetCtx.save();
+      targetCtx.globalCompositeOperation = 'destination-out';
+      targetCtx.globalAlpha = bo.knockout === 'deep' ? 1 - fillOpacity : (1 - fillOpacity) * 0.78;
+      targetCtx.drawImage(baseSrc, bbox.x, bbox.y);
+      targetCtx.restore();
     }
 
-    const effectsOn = fx.effectsVisible !== false;
+    // Helper: extract padded local alpha from shapeCanvas into region { x, y, w, h }
+    const getAlphaInRegion = (region) => {
+      const alpha = new Float32Array(region.w * region.h);
+      const sx0 = Math.max(0, region.x - bbox.x);
+      const sy0 = Math.max(0, region.y - bbox.y);
+      const dx0 = Math.max(0, bbox.x - region.x);
+      const dy0 = Math.max(0, bbox.y - region.y);
+      const cw = Math.min(bbox.w - sx0, region.w - dx0);
+      const ch = Math.min(bbox.h - sy0, region.h - dy0);
+      if (cw <= 0 || ch <= 0) return alpha;
+      const srcData = shapeCanvas.getContext('2d').getImageData(sx0, sy0, cw, ch).data;
+      for (let py = 0; py < ch; py++) {
+        const sRow = py * cw;
+        const dRow = (dy0 + py) * region.w + dx0;
+        for (let px = 0; px < cw; px++) {
+          alpha[dRow + px] = srcData[(sRow + px) * 4 + 3] / 255;
+        }
+      }
+      return alpha;
+    };
+
+    // Cached local bbox alpha & inner EDT (computed lazily once and reused by Inner Shadow / Inner Glow / Inner Bevel / Stroke Inside!)
+    let cachedBboxAlpha = null;
+    let cachedBboxInnerEDT = null;
+    const getBboxAlpha = () => {
+      if (!cachedBboxAlpha) {
+        cachedBboxAlpha = extractAlphaRegion(shapeCanvas, { x: 0, y: 0, w: bbox.w, h: bbox.h });
+      }
+      return cachedBboxAlpha;
+    };
+    const getBboxInnerEDT = () => {
+      if (!cachedBboxInnerEDT) {
+        cachedBboxInnerEDT = computeInnerEDT(getBboxAlpha(), bbox.w, bbox.h);
+      }
+      return cachedBboxInnerEDT;
+    };
+
+    const transparencyShapes = bo.transparencyShapesLayer !== false;
 
     // ------------------------------------------------------------------------
-    // 1. DROP SHADOWS (Stackable, behind layer — bottom-to-top order!)
+    // 1. DROP SHADOWS (Stackable, bottom-to-top — Exact EDT Spread + Exact Gaussian!)
     // ------------------------------------------------------------------------
     if (effectsOn && Array.isArray(fx.dropShadows)) {
       for (let idx = fx.dropShadows.length - 1; idx >= 0; idx--) {
@@ -1365,172 +1756,244 @@ export class LayerStylesEngine {
         const dist = ds.distance ?? 5;
         const ox = Math.round(-Math.cos(rad) * dist);
         const oy = Math.round(Math.sin(rad) * dist);
-        const size = Math.max(0, ds.size ?? 5);
+        const size = Math.max(0, Math.min(250, ds.size ?? 5));
+        const spread = clamp01((ds.spread ?? 0) / 100);
 
-        const shCanvas = document.createElement('canvas');
-        shCanvas.width = width;
-        shCanvas.height = height;
-        const sCtx = shCanvas.getContext('2d');
-
-        const sil = LayerStylesEngine.makeSilhouette(processedSrc, ds.color || '#000000', width, height);
-        if (size > 0) sCtx.filter = `blur(${Math.max(0.5, size * 0.5)}px)`;
-        sCtx.drawImage(sil, ox, oy);
-        sCtx.filter = 'none';
-
-        const region = LayerStylesEngine.expandRegion(
+        const pad = Math.ceil(size * 1.45 + 6);
+        const shRegion = LayerStylesEngine.expandRegion(
           { x: bbox.x + ox, y: bbox.y + oy, w: bbox.w, h: bbox.h },
-          size * 1.5 + 8,
+          pad,
           width,
           height
         );
 
-        if ((ds.spread ?? 0) > 0 || (ds.noise ?? 0) > 0 || (ds.contour && ds.contour !== 'linear')) {
-          LayerStylesEngine.shapeEffectAlphaCanvas(shCanvas, region, {
-            color: ds.color || '#000000',
-            spread: ds.spread ?? 0,
-            range: 50,
-            contour: ds.contour || 'linear',
-            noise: ds.noise ?? 0,
-            seed: 41 + idx * 7
-          });
+        // Build unshifted alpha inside (shRegion shifted back by -ox, -oy)
+        const srcAlpha = new Float32Array(shRegion.w * shRegion.h);
+        const mapX = bbox.x + ox - shRegion.x;
+        const mapY = bbox.y + oy - shRegion.y;
+        const sx0 = Math.max(0, -mapX);
+        const sy0 = Math.max(0, -mapY);
+        const dx0 = Math.max(0, mapX);
+        const dy0 = Math.max(0, mapY);
+        const cw = Math.min(bbox.w - sx0, shRegion.w - dx0);
+        const ch = Math.min(bbox.h - sy0, shRegion.h - dy0);
+        if (cw > 0 && ch > 0) {
+          const bAlpha = getBboxAlpha();
+          for (let py = 0; py < ch; py++) {
+            const sRow = (sy0 + py) * bbox.w + sx0;
+            const dRow = (dy0 + py) * shRegion.w + dx0;
+            for (let px = 0; px < cw; px++) {
+              srcAlpha[dRow + px] = bAlpha[sRow + px];
+            }
+          }
         }
 
-        // Photoshop "Layer Knocks Out Drop Shadow" cuts out interior pixels
-        if (ds.layerKnocksOut !== false) {
-          sCtx.globalCompositeOperation = 'destination-out';
-          sCtx.drawImage(processedSrc, 0, 0);
+        // Exact Photoshop Spread + Size physics:
+        // solidRad = size * spread (exact EDT morphological dilation!)
+        // blurRad  = size * (1 - spread) (exact smooth Gaussian feather!)
+        const solidRad = size * spread;
+        const blurRad = size * (1 - spread);
+        let workAlpha = srcAlpha;
+
+        if (solidRad > 0.1) {
+          const edt = computeOuterEDT(srcAlpha, shRegion.w, shRegion.h);
+          const dilated = new Float32Array(srcAlpha.length);
+          for (let i = 0; i < dilated.length; i++) {
+            const a0 = srcAlpha[i];
+            if (a0 >= 0.999) {
+              dilated[i] = 1;
+            } else {
+              const d = edt[i];
+              const da = clamp01(solidRad + 0.5 - d);
+              dilated[i] = da > a0 ? da : a0;
+            }
+          }
+          workAlpha = dilated;
         }
 
-        LayerStylesEngine.compositeCanvas(
-          destCtx,
+        if (blurRad > 0.1) {
+          // Photoshop Size maps cleanly to sigma ~ 0.42 * blurRad
+          workAlpha = blurFloatBuffer(workAlpha, shRegion.w, shRegion.h, blurRad * 0.42, 0);
+        }
+
+        // Optional Layer Knocks Out Drop Shadow (unshifted layer silhouette!)
+        let knockoutBuf = null;
+        if (ds.layerKnocksOut !== false && transparencyShapes) {
+          knockoutBuf = getAlphaInRegion(shRegion);
+        }
+
+        const shCanvas = LayerStylesEngine.buildColoredEffectCanvas(workAlpha, shRegion.w, shRegion.h, shRegion.x, shRegion.y, {
+          color: ds.color || '#000000',
+          contour: ds.contour || 'linear',
+          antiAliased: Boolean(ds.antiAliased),
+          noise: ds.noise ?? 0,
+          knockoutAlpha: knockoutBuf,
+          seed: 41 + idx * 7
+        });
+
+        LayerStylesEngine.compositeRegion(
+          targetCtx,
           shCanvas,
+          shRegion.x,
+          shRegion.y,
           ds.blendMode || 'multiply',
-          layerOpacity * clamp01(ds.opacity ?? 0.75),
-          region
+          layerOpacity * clamp01(ds.opacity ?? 0.75)
         );
       }
     }
 
     // ------------------------------------------------------------------------
-    // 2. OUTER GLOW (Behind layer — Solid/Gradient, Softer/Precise, Spread, Contour, Range, Jitter, Noise)
+    // 2. OUTER GLOW (Exact EDT Precise OR Smooth Gaussian Softer + Spread + Range + Gradient!)
     // ------------------------------------------------------------------------
     if (effectsOn && fx.outerGlow?.enabled) {
       const og = fx.outerGlow;
-      const size = Math.max(0, og.size ?? 7);
-      const glowCanvas = document.createElement('canvas');
-      glowCanvas.width = width;
-      glowCanvas.height = height;
-      const gCtx = glowCanvas.getContext('2d');
+      const size = Math.max(0, Math.min(250, og.size ?? 7));
+      const spread = clamp01((og.spread ?? 0) / 100);
+      const range = Math.max(0.05, (og.range ?? 50) / 100);
+      const pad = Math.ceil(size * 1.5 + 8);
+      const gRegion = LayerStylesEngine.expandRegion(bbox, pad, width, height);
+      const srcAlpha = getAlphaInRegion(gRegion);
+      const n = gRegion.w * gRegion.h;
+      const solidRad = size * spread;
+      const falloffRad = Math.max(0.5, size * (1 - spread));
+      let glowAlpha;
 
-      const sil = LayerStylesEngine.makeSilhouette(processedSrc, '#ffffff', width, height);
-      if (og.technique === 'precise' && size > 0) {
-        // Multi-ring sharp Euclidean halo for Precise technique
-        const rings = Math.max(3, Math.min(10, Math.ceil(size / 3)));
-        for (let r = rings; r >= 1; r--) {
-          const rad = (size * r) / rings;
-          const steps = Math.max(12, Math.min(28, Math.round(rad * 2.5)));
-          gCtx.globalAlpha = 1 / rings;
-          for (let a = 0; a < steps; a++) {
-            const th = (a * Math.PI * 2) / steps;
-            gCtx.drawImage(sil, Math.cos(th) * rad, Math.sin(th) * rad);
+      if (og.technique === 'precise') {
+        // Exact Euclidean distance halo (zero concentric ring banding!)
+        const edt = computeOuterEDT(srcAlpha, gRegion.w, gRegion.h);
+        glowAlpha = new Float32Array(n);
+        const effFalloff = Math.max(0.5, falloffRad * (range * 2));
+        for (let i = 0; i < n; i++) {
+          const d = edt[i];
+          if (d <= solidRad) {
+            glowAlpha[i] = 1;
+          } else if (d < solidRad + effFalloff) {
+            glowAlpha[i] = clamp01(1 - (d - solidRad) / effFalloff);
           }
         }
-        gCtx.globalAlpha = 1;
       } else {
-        if (size > 0) gCtx.filter = `blur(${Math.max(0.5, size * 0.55)}px)`;
-        gCtx.drawImage(sil, 0, 0);
-        gCtx.drawImage(sil, 0, 0);
-        gCtx.filter = 'none';
+        // Softer technique: EDT spread + exact Gaussian blur + Range ramp
+        let baseA = srcAlpha;
+        if (solidRad > 0.1) {
+          const edt = computeOuterEDT(srcAlpha, gRegion.w, gRegion.h);
+          baseA = new Float32Array(n);
+          for (let i = 0; i < n; i++) {
+            baseA[i] = Math.max(srcAlpha[i], clamp01(solidRad + 0.5 - edt[i]));
+          }
+        }
+        const blurred = size > 0 ? blurFloatBuffer(baseA, gRegion.w, gRegion.h, Math.max(0.4, falloffRad * 0.45), 0) : baseA;
+        glowAlpha = new Float32Array(n);
+        const rangeScale = 1 / Math.max(0.08, range * 1.45);
+        for (let i = 0; i < n; i++) {
+          glowAlpha[i] = clamp01(blurred[i] * rangeScale);
+        }
       }
 
-      // Remove inside silhouette so Outer Glow radiates cleanly around edges
-      gCtx.globalCompositeOperation = 'destination-out';
-      gCtx.drawImage(processedSrc, 0, 0);
-      gCtx.globalCompositeOperation = 'source-over';
-
-      const region = LayerStylesEngine.expandRegion(bbox, size * 1.8 + 8, width, height);
-      LayerStylesEngine.shapeEffectAlphaCanvas(glowCanvas, region, {
+      const glowCanvas = LayerStylesEngine.buildColoredEffectCanvas(glowAlpha, gRegion.w, gRegion.h, gRegion.x, gRegion.y, {
         colorType: og.colorType || 'solid',
         color: og.color || '#ffffbe',
         gradientStops: og.gradientStops,
-        spread: og.spread ?? 0,
-        range: og.range ?? 50,
         contour: og.contour || 'linear',
+        antiAliased: Boolean(og.antiAliased),
         noise: og.noise ?? 0,
         jitter: og.jitter ?? 0,
+        knockoutAlpha: transparencyShapes ? srcAlpha : null,
         seed: 73
       });
 
-      LayerStylesEngine.compositeCanvas(
-        destCtx,
+      LayerStylesEngine.compositeRegion(
+        targetCtx,
         glowCanvas,
+        gRegion.x,
+        gRegion.y,
         og.blendMode || 'screen',
-        layerOpacity * clamp01(og.opacity ?? 0.35),
-        region
+        layerOpacity * clamp01(og.opacity ?? 0.35)
       );
     }
 
     // ------------------------------------------------------------------------
-    // 2b. OUTER BEVEL (when style is outerBevel / emboss / pillowEmboss)
+    // 2b. OUTER BEVEL / EMBOSS / PILLOW EMBOSS (True 3D Outer Surface Normal Shading!)
     // ------------------------------------------------------------------------
     if (effectsOn && fx.bevelEmboss?.enabled) {
       const bev = fx.bevelEmboss;
       if (bev.style === 'outerBevel' || bev.style === 'emboss' || bev.style === 'pillowEmboss') {
-        LayerStylesEngine.renderBevelOuter(bev, destCtx, processedSrc, bbox, width, height, layerOpacity, gAngle, gAltitude);
+        LayerStylesEngine.renderBevelOuter3D(
+          bev,
+          targetCtx,
+          getAlphaInRegion,
+          bbox,
+          width,
+          height,
+          layerOpacity,
+          gAngle,
+          gAltitude
+        );
       }
     }
 
     // ------------------------------------------------------------------------
-    // 3. INTERIOR COMPOSITE (Base Pixels * Fill Opacity + Clipped Overlays)
+    // 3. INTERIOR COMPOSITE (Tight bbox canvas: Base Pixels * Fill Opacity + Clipped Overlays)
     // ------------------------------------------------------------------------
     const interior = document.createElement('canvas');
-    interior.width = width;
-    interior.height = height;
+    interior.width = bbox.w;
+    interior.height = bbox.h;
     const iCtx = interior.getContext('2d');
 
     iCtx.save();
     iCtx.globalAlpha = fillOpacity;
-    iCtx.drawImage(processedSrc, 0, 0);
+    iCtx.drawImage(baseSrc, 0, 0);
     iCtx.restore();
 
-    const applyClippedInterior = (blendMode, opacity, drawFillFn) => {
-      const ov = document.createElement('canvas');
-      ov.width = width;
-      ov.height = height;
-      const oCtx = ov.getContext('2d');
-      drawFillFn(oCtx);
-      oCtx.globalCompositeOperation = 'destination-in';
-      oCtx.drawImage(processedSrc, 0, 0);
-      LayerStylesEngine.compositeCanvas(iCtx, ov, blendMode || 'source-over', clamp01(opacity ?? 1), bbox);
+    const applyClippedInterior = (blendMode, opacity, drawOrCanvas) => {
+      let ov;
+      if (drawOrCanvas instanceof HTMLCanvasElement) {
+        ov = drawOrCanvas;
+      } else {
+        ov = document.createElement('canvas');
+        ov.width = bbox.w;
+        ov.height = bbox.h;
+        const oCtx = ov.getContext('2d');
+        drawOrCanvas(oCtx);
+        if (transparencyShapes) {
+          oCtx.globalCompositeOperation = 'destination-in';
+          oCtx.drawImage(shapeCanvas, 0, 0);
+        }
+      }
+      LayerStylesEngine.compositeRegion(iCtx, ov, 0, 0, blendMode || 'source-over', clamp01(opacity ?? 1));
     };
 
     if (effectsOn) {
-      // 3a. PATTERN OVERLAY
+      // 3a. PATTERN OVERLAY (With true Link with Layer & Angle/Scale!)
       if (fx.patternOverlay?.enabled) {
         const po = fx.patternOverlay;
         applyClippedInterior(po.blendMode || 'source-over', po.opacity ?? 1, (oCtx) => {
+          const linkOffX = po.linkWithLayer !== false ? (po.offsetX || 0) : -bbox.x + (po.offsetX || 0);
+          const linkOffY = po.linkWithLayer !== false ? (po.offsetY || 0) : -bbox.y + (po.offsetY || 0);
           const pat = LayerStylesEngine.createProceduralPattern(
             oCtx,
             po.pattern || 'stripes',
             po.scale ?? 100,
-            po.angle ?? 0
+            po.angle ?? 0,
+            linkOffX,
+            linkOffY
           );
-          oCtx.save();
-          if (po.offsetX || po.offsetY) oCtx.translate(po.offsetX || 0, po.offsetY || 0);
           oCtx.fillStyle = pat;
-          oCtx.fillRect(-(po.offsetX || 0), -(po.offsetY || 0), width, height);
-          oCtx.restore();
+          oCtx.fillRect(0, 0, bbox.w, bbox.h);
         });
       }
 
-      // 3b. GRADIENT OVERLAYS (Stackable, bottom-to-top)
+      // 3b. GRADIENT OVERLAYS (Stackable, bottom-to-top — Exact Directional Box Projection!)
       if (Array.isArray(fx.gradientOverlays)) {
         for (let idx = fx.gradientOverlays.length - 1; idx >= 0; idx--) {
           const go = fx.gradientOverlays[idx];
           if (!go?.enabled) continue;
           applyClippedInterior(go.blendMode || 'source-over', go.opacity ?? 1, (oCtx) => {
-            LayerStylesEngine.fillGradientCanvas(
+            LayerStylesEngine.fillGradientRegion(
               oCtx,
+              bbox.w,
+              bbox.h,
+              bbox.x,
+              bbox.y,
               width,
               height,
               {
@@ -1557,220 +2020,303 @@ export class LayerStylesEngine {
           if (!co?.enabled) continue;
           applyClippedInterior(co.blendMode || 'source-over', co.opacity ?? 1, (oCtx) => {
             oCtx.fillStyle = co.color || '#ff0000';
-            oCtx.fillRect(0, 0, width, height);
+            oCtx.fillRect(0, 0, bbox.w, bbox.h);
           });
         }
       }
 
-      // 3d. SATIN (Dual offset self-interference + Contour + Invert)
+      // 3d. SATIN (Exact Photoshop |blur(a(x+dx,y+dy)) - blur(a(x-dx,y-dy))| + Contour + Invert!)
       if (fx.satin?.enabled) {
         const sat = fx.satin;
         const rad = ((sat.angle ?? 19) * Math.PI) / 180;
-        const dist = sat.distance ?? 11;
-        const dx = Math.cos(rad) * dist;
-        const dy = -Math.sin(rad) * dist;
-        applyClippedInterior(sat.blendMode || 'multiply', sat.opacity ?? 0.5, (oCtx) => {
-          const s1 = document.createElement('canvas');
-          s1.width = width;
-          s1.height = height;
-          const c1 = s1.getContext('2d');
-          c1.filter = `blur(${Math.max(0.5, (sat.size ?? 14) * 0.45)}px)`;
-          c1.drawImage(processedSrc, dx, dy);
-          c1.globalCompositeOperation = 'xor';
-          c1.drawImage(processedSrc, -dx, -dy);
-          c1.filter = 'none';
-
-          if (sat.invert !== false) {
-            oCtx.fillStyle = sat.color || '#000000';
-            oCtx.fillRect(0, 0, width, height);
-            oCtx.globalCompositeOperation = 'destination-out';
-            oCtx.drawImage(s1, 0, 0);
-            oCtx.globalCompositeOperation = 'source-over';
-          } else {
-            oCtx.drawImage(s1, 0, 0);
+        const dist = Math.max(0, sat.distance ?? 11);
+        const dx = Math.round(Math.cos(rad) * dist);
+        const dy = Math.round(-Math.sin(rad) * dist);
+        const size = Math.max(0, Math.min(250, sat.size ?? 14));
+        const pad = Math.ceil(dist + size + 4);
+        // Virtual padded alpha around bbox (zero outside)
+        const pw = bbox.w + pad * 2;
+        const ph = bbox.h + pad * 2;
+        const bAlpha = getBboxAlpha();
+        const padAlpha = new Float32Array(pw * ph);
+        for (let py = 0; py < bbox.h; py++) {
+          const sRow = py * bbox.w;
+          const dRow = (py + pad) * pw + pad;
+          for (let px = 0; px < bbox.w; px++) padAlpha[dRow + px] = bAlpha[sRow + px];
+        }
+        const blurred = size > 0 ? blurFloatBuffer(padAlpha, pw, ph, Math.max(0.5, size * 0.42), 0) : padAlpha;
+        const satAlpha = new Float32Array(bbox.w * bbox.h);
+        const invFlag = sat.invert !== false;
+        for (let py = 0; py < bbox.h; py++) {
+          const row = py * bbox.w;
+          for (let px = 0; px < bbox.w; px++) {
+            const p = row + px;
+            if (bAlpha[p] <= 0.002) continue;
+            const x1 = Math.max(0, Math.min(pw - 1, px + pad + dx));
+            const y1 = Math.max(0, Math.min(ph - 1, py + pad + dy));
+            const x2 = Math.max(0, Math.min(pw - 1, px + pad - dx));
+            const y2 = Math.max(0, Math.min(ph - 1, py + pad - dy));
+            const diff = Math.abs(blurred[y1 * pw + x1] - blurred[y2 * pw + x2]);
+            satAlpha[p] = invFlag ? clamp01(1 - diff) : clamp01(diff);
           }
-
-          LayerStylesEngine.shapeEffectAlphaCanvas(oCtx.canvas, bbox, {
-            color: sat.color || '#000000',
-            contour: sat.contour || 'linear',
-            range: 50,
-            spread: 0,
-            noise: 0,
-            seed: 59
-          });
+        }
+        const satCanvas = LayerStylesEngine.buildColoredEffectCanvas(satAlpha, bbox.w, bbox.h, bbox.x, bbox.y, {
+          color: sat.color || '#000000',
+          contour: sat.contour || 'linear',
+          antiAliased: Boolean(sat.antiAliased),
+          clipAlpha: bAlpha,
+          seed: 59
         });
+        applyClippedInterior(sat.blendMode || 'multiply', sat.opacity ?? 0.5, satCanvas);
       }
 
-      // 3e. INNER GLOW (Edge or Center, Softer/Precise, Choke, Size, Contour, Range, Jitter, Noise, Solid/Gradient)
+      // 3e. INNER GLOW (Exact EDT for both Edge & Center Source + Softer/Precise + Choke + Range!)
       if (fx.innerGlow?.enabled) {
         const ig = fx.innerGlow;
-        const size = Math.max(0, ig.size ?? 5);
-        applyClippedInterior(ig.blendMode || 'screen', ig.opacity ?? 0.75, (oCtx) => {
-          if (ig.source === 'center') {
-            const sil = LayerStylesEngine.makeSilhouette(processedSrc, '#ffffff', width, height);
-            if (size > 0) oCtx.filter = `blur(${Math.max(0.5, size * 0.6)}px)`;
-            oCtx.drawImage(sil, 0, 0);
-            oCtx.filter = 'none';
-            // Invert interior falloff so center is strongest and edge fades out
-            const inv = LayerStylesEngine.makeInvertedSilhouette(processedSrc, '#ffffff', width, height);
-            oCtx.globalCompositeOperation = 'destination-out';
-            oCtx.filter = `blur(${Math.max(0.5, size * 0.55)}px)`;
-            oCtx.drawImage(inv, 0, 0);
-            oCtx.filter = 'none';
-            oCtx.globalCompositeOperation = 'source-over';
-          } else {
-            const inv = LayerStylesEngine.makeInvertedSilhouette(processedSrc, '#ffffff', width, height);
-            if (ig.technique === 'precise' && size > 0) {
-              const rings = Math.max(3, Math.min(8, Math.ceil(size / 3)));
-              for (let r = rings; r >= 1; r--) {
-                const rad = (size * r) / rings;
-                const steps = Math.max(10, Math.min(20, Math.round(rad * 2)));
-                oCtx.globalAlpha = 1 / rings;
-                for (let a = 0; a < steps; a++) {
-                  const th = (a * Math.PI * 2) / steps;
-                  oCtx.drawImage(inv, Math.cos(th) * rad, Math.sin(th) * rad);
-                }
-              }
-              oCtx.globalAlpha = 1;
+        const size = Math.max(0, Math.min(250, ig.size ?? 5));
+        const choke = clamp01((ig.choke ?? 0) / 100);
+        const range = Math.max(0.05, (ig.range ?? 50) / 100);
+        const bAlpha = getBboxAlpha();
+        const innerDist = getBboxInnerEDT();
+        const n = bbox.w * bbox.h;
+        const chokeRad = size * choke;
+        const falloffRad = Math.max(0.5, size * (1 - choke) * (range * 2));
+        let igAlpha = new Float32Array(n);
+
+        if (ig.source === 'center') {
+          // Strongest at interior center, fading out to 0 at edges!
+          // Measure max inner distance so thin text still gets a vivid center glow!
+          let maxD = 1;
+          for (let i = 0; i < n; i++) if (bAlpha[i] > 0.5 && innerDist[i] > maxD) maxD = innerDist[i];
+          const effSpan = Math.max(0.5, Math.min(size > 0 ? size : maxD, maxD));
+          const effChoke = effSpan * choke;
+          const effFall = Math.max(0.5, (effSpan - effChoke) * (range * 2));
+          for (let i = 0; i < n; i++) {
+            if (bAlpha[i] <= 0.002) continue;
+            const d = innerDist[i];
+            if (d <= effChoke) {
+              igAlpha[i] = 0;
             } else {
-              if (size > 0) oCtx.filter = `blur(${Math.max(0.5, size * 0.55)}px)`;
-              oCtx.drawImage(inv, 0, 0);
-              oCtx.drawImage(inv, 0, 0);
-              oCtx.filter = 'none';
+              igAlpha[i] = clamp01((d - effChoke) / effFall);
             }
           }
+          if (ig.technique !== 'precise' && size > 1) {
+            igAlpha = blurFloatBuffer(igAlpha, bbox.w, bbox.h, Math.min(6, size * 0.18), 0);
+          }
+        } else if (ig.technique === 'precise') {
+          // Precise Edge Inner Glow from exact Euclidean inner distance
+          for (let i = 0; i < n; i++) {
+            if (bAlpha[i] <= 0.002) continue;
+            const d = innerDist[i];
+            if (d <= chokeRad) igAlpha[i] = 1;
+            else if (d < chokeRad + falloffRad) igAlpha[i] = clamp01(1 - (d - chokeRad) / falloffRad);
+          }
+        } else {
+          // Softer Edge Inner Glow: EDT choke + exact Gaussian blur on virtual-padded inverted alpha
+          const invBase = new Float32Array(n);
+          for (let i = 0; i < n; i++) {
+            const d = innerDist[i];
+            if (bAlpha[i] < 0.5) invBase[i] = 1;
+            else if (chokeRad > 0.1) invBase[i] = clamp01(chokeRad + 0.5 - d);
+            else invBase[i] = 1 - bAlpha[i];
+          }
+          const blurred = size > 0 ? blurFloatBuffer(invBase, bbox.w, bbox.h, Math.max(0.4, size * (1 - choke) * 0.45), 1) : invBase;
+          const rangeScale = 1 / Math.max(0.08, range * 1.45);
+          for (let i = 0; i < n; i++) {
+            if (bAlpha[i] <= 0.002) continue;
+            igAlpha[i] = clamp01(blurred[i] * rangeScale);
+          }
+        }
 
-          LayerStylesEngine.shapeEffectAlphaCanvas(oCtx.canvas, bbox, {
-            colorType: ig.colorType || 'solid',
-            color: ig.color || '#ffffbe',
-            gradientStops: ig.gradientStops,
-            spread: ig.choke ?? 0,
-            range: ig.range ?? 50,
-            contour: ig.contour || 'linear',
-            noise: ig.noise ?? 0,
-            jitter: ig.jitter ?? 0,
-            seed: 83
-          });
+        const igCanvas = LayerStylesEngine.buildColoredEffectCanvas(igAlpha, bbox.w, bbox.h, bbox.x, bbox.y, {
+          colorType: ig.colorType || 'solid',
+          color: ig.color || '#ffffbe',
+          gradientStops: ig.gradientStops,
+          contour: ig.contour || 'linear',
+          antiAliased: Boolean(ig.antiAliased),
+          noise: ig.noise ?? 0,
+          jitter: ig.jitter ?? 0,
+          clipAlpha: bAlpha,
+          seed: 83
         });
+        applyClippedInterior(ig.blendMode || 'screen', ig.opacity ?? 0.75, igCanvas);
       }
 
-      // 3f. INNER SHADOWS (Stackable, bottom-to-top — Angle/Global Light, Distance, Choke, Size, Contour, Noise)
+      // 3f. INNER SHADOWS (Stackable, bottom-to-top — Exact EDT Choke + Gaussian + Virtual Edge!)
       if (Array.isArray(fx.innerShadows)) {
         for (let idx = fx.innerShadows.length - 1; idx >= 0; idx--) {
           const is = fx.innerShadows[idx];
           if (!is?.enabled) continue;
           const angle = is.useGlobalLight !== false ? gAngle : (is.angle ?? 120);
           const rad = (angle * Math.PI) / 180;
-          const dist = is.distance ?? 5;
+          const dist = Math.max(0, is.distance ?? 5);
           const ox = Math.round(-Math.cos(rad) * dist);
           const oy = Math.round(Math.sin(rad) * dist);
-          const size = Math.max(0, is.size ?? 5);
+          const size = Math.max(0, Math.min(250, is.size ?? 5));
+          const choke = clamp01((is.choke ?? 0) / 100);
+          const bAlpha = getBboxAlpha();
+          const innerDist = getBboxInnerEDT();
+          const n = bbox.w * bbox.h;
 
-          applyClippedInterior(is.blendMode || 'multiply', is.opacity ?? 0.75, (oCtx) => {
-            const inv = LayerStylesEngine.makeInvertedSilhouette(processedSrc, '#ffffff', width, height);
-            if (size > 0) oCtx.filter = `blur(${Math.max(0.5, size * 0.5)}px)`;
-            oCtx.drawImage(inv, ox, oy);
-            oCtx.filter = 'none';
+          // Build unshifted choked inverted silhouette (1 outside shape & within chokeRad of edge, 0 deep inside)
+          const chokeRad = size * choke;
+          const blurRad = size * (1 - choke);
+          const invMask = new Float32Array(n);
+          for (let i = 0; i < n; i++) {
+            if (bAlpha[i] < 0.5) {
+              invMask[i] = 1;
+            } else if (chokeRad > 0.1) {
+              invMask[i] = clamp01(chokeRad + 0.5 - innerDist[i]);
+            } else {
+              invMask[i] = 1 - bAlpha[i];
+            }
+          }
 
-            LayerStylesEngine.shapeEffectAlphaCanvas(oCtx.canvas, bbox, {
-              color: is.color || '#000000',
-              spread: is.choke ?? 0,
-              range: 50,
-              contour: is.contour || 'linear',
-              noise: is.noise ?? 0,
-              seed: 101 + idx * 11
-            });
+          // Blur with edgeVal = 1 (outside bbox is opaque shadow wall!)
+          const blurredInv = blurRad > 0.1 ? blurFloatBuffer(invMask, bbox.w, bbox.h, blurRad * 0.42, 1) : invMask;
+
+          // Shift shadow by (+ox, +oy): sample blurredInv at (px - ox, py - oy); out-of-bounds = 1
+          const shifted = new Float32Array(n);
+          for (let py = 0; py < bbox.h; py++) {
+            const sy = py - oy;
+            const row = py * bbox.w;
+            for (let px = 0; px < bbox.w; px++) {
+              const p = row + px;
+              if (bAlpha[p] <= 0.002) continue;
+              const sx = px - ox;
+              if (sx < 0 || sx >= bbox.w || sy < 0 || sy >= bbox.h) {
+                shifted[p] = 1;
+              } else {
+                shifted[p] = blurredInv[sy * bbox.w + sx];
+              }
+            }
+          }
+
+          const isCanvas = LayerStylesEngine.buildColoredEffectCanvas(shifted, bbox.w, bbox.h, bbox.x, bbox.y, {
+            color: is.color || '#000000',
+            contour: is.contour || 'linear',
+            antiAliased: Boolean(is.antiAliased),
+            noise: is.noise ?? 0,
+            clipAlpha: bAlpha,
+            seed: 101 + idx * 11
           });
+          applyClippedInterior(is.blendMode || 'multiply', is.opacity ?? 0.75, isCanvas);
         }
       }
 
-      // 3g. BEVEL & EMBOSS (Inner Bevel / Emboss / Pillow Emboss + Gloss Contour + Contour + Texture)
+      // 3g. TRUE 3D BEVEL & EMBOSS (Inner Bevel / Emboss / Pillow Emboss + Contour + Texture + Gloss!)
       if (fx.bevelEmboss?.enabled && fx.bevelEmboss.style !== 'outerBevel' && fx.bevelEmboss.style !== 'strokeEmboss') {
-        LayerStylesEngine.renderBevelInner(
+        LayerStylesEngine.renderBevelInner3D(
           fx.bevelEmboss,
           applyClippedInterior,
-          processedSrc,
+          getBboxAlpha(),
+          getBboxInnerEDT(),
           bbox,
-          width,
-          height,
           gAngle,
           gAltitude
         );
       }
     }
 
-    // Draw composed interior onto destination canvas
-    LayerStylesEngine.compositeCanvas(
-      destCtx,
+    // Draw composed interior onto target canvas
+    LayerStylesEngine.compositeRegion(
+      targetCtx,
       interior,
+      bbox.x,
+      bbox.y,
       layer.blendMode || 'source-over',
-      layerOpacity,
-      bbox
+      layerOpacity
     );
 
     // ------------------------------------------------------------------------
-    // 4. STROKES (Stackable, bottom-to-top — Outside/Inside/Center, Color/Gradient/Pattern, Overprint)
+    // 4. STROKES (Stackable, bottom-to-top — Exact EDT 1..250px, Zero Hollow Gaps!)
     // ------------------------------------------------------------------------
     if (effectsOn && Array.isArray(fx.strokes)) {
       for (let idx = fx.strokes.length - 1; idx >= 0; idx--) {
         const st = fx.strokes[idx];
         if (!st?.enabled || (st.size ?? 0) <= 0) continue;
-        const stSize = Math.min(80, Math.max(1, st.size));
+        const stSize = Math.min(250, Math.max(1, st.size));
         const pos = st.position || 'outside';
+        const pad = pos === 'inside' ? 2 : Math.ceil(pos === 'center' ? stSize / 2 + 4 : stSize + 4);
+        const stRegion = LayerStylesEngine.expandRegion(bbox, pad, width, height);
+        const srcAlpha = getAlphaInRegion(stRegion);
+        const n = stRegion.w * stRegion.h;
 
-        const strokeMask = document.createElement('canvas');
-        strokeMask.width = width;
-        strokeMask.height = height;
-        const dCtx = strokeMask.getContext('2d');
+        // Compute exact anti-aliased stroke alpha + normalized Shape Burst distance t in [0..1]
+        const strokeAlpha = new Float32Array(n);
+        const burstT = st.fillType === 'gradient' && st.gradientStyle === 'shapeBurst' ? new Float32Array(n) : null;
 
-        const radius = pos === 'center' ? Math.max(1, stSize / 2) : stSize;
-        const steps = Math.max(14, Math.min(36, Math.round(radius * 2.8)));
-
-        if (pos === 'inside') {
-          const inv = LayerStylesEngine.makeInvertedSilhouette(processedSrc, '#ffffff', width, height);
-          for (let a = 0; a < steps; a++) {
-            const th = (a * Math.PI * 2) / steps;
-            dCtx.drawImage(inv, Math.cos(th) * radius, Math.sin(th) * radius);
+        if (pos === 'outside') {
+          const dOut = computeOuterEDT(srcAlpha, stRegion.w, stRegion.h);
+          for (let i = 0; i < n; i++) {
+            const outerCover = clamp01(stSize + 0.5 - dOut[i]);
+            if (outerCover <= 0.001) continue;
+            const a = outerCover * (1 - srcAlpha[i]);
+            if (a > 0.001) {
+              strokeAlpha[i] = a;
+              if (burstT) burstT[i] = clamp01(dOut[i] / Math.max(1, stSize));
+            }
           }
-          dCtx.globalCompositeOperation = 'destination-in';
-          dCtx.drawImage(processedSrc, 0, 0);
+        } else if (pos === 'inside') {
+          const dIn = computeInnerEDT(srcAlpha, stRegion.w, stRegion.h);
+          for (let i = 0; i < n; i++) {
+            if (srcAlpha[i] <= 0.002) continue;
+            const innerCover = clamp01(stSize + 0.5 - dIn[i]);
+            if (innerCover > 0.001) {
+              strokeAlpha[i] = innerCover * srcAlpha[i];
+              if (burstT) burstT[i] = clamp01(dIn[i] / Math.max(1, stSize));
+            }
+          }
         } else {
-          for (let a = 0; a < steps; a++) {
-            const th = (a * Math.PI * 2) / steps;
-            dCtx.drawImage(processedSrc, Math.cos(th) * radius, Math.sin(th) * radius);
-          }
-          if (pos === 'outside') {
-            dCtx.globalCompositeOperation = 'destination-out';
-            dCtx.drawImage(processedSrc, 0, 0);
+          // Center stroke: half outside + half inside seamlessly!
+          const half = stSize * 0.5;
+          const dOut = computeOuterEDT(srcAlpha, stRegion.w, stRegion.h);
+          const dIn = computeInnerEDT(srcAlpha, stRegion.w, stRegion.h);
+          for (let i = 0; i < n; i++) {
+            const outCover = clamp01(half + 0.5 - dOut[i]);
+            const inCover = clamp01(half + 0.5 - dIn[i]);
+            const a = srcAlpha[i] >= 0.5 ? inCover : outCover;
+            if (a > 0.001) {
+              strokeAlpha[i] = a;
+              if (burstT) {
+                const signedD = srcAlpha[i] >= 0.5 ? half - dIn[i] : half + dOut[i];
+                burstT[i] = clamp01(signedD / Math.max(1, stSize));
+              }
+            }
           }
         }
 
-        const stRegion = LayerStylesEngine.expandRegion(bbox, stSize + 4, width, height);
+        // Build stroke mask canvas
+        const strokeCanvas = document.createElement('canvas');
+        strokeCanvas.width = stRegion.w;
+        strokeCanvas.height = stRegion.h;
+        const dCtx = strokeCanvas.getContext('2d');
 
-        // Fill stroke with Color, Gradient, or Pattern
-        dCtx.globalCompositeOperation = 'source-in';
-        if (st.fillType === 'gradient') {
-          if (st.gradientStyle === 'shapeBurst') {
-            // Shape Burst gradient: blur stroke mask then map alpha through gradient LUT
-            const sb = document.createElement('canvas');
-            sb.width = width;
-            sb.height = height;
-            const sbCtx = sb.getContext('2d');
-            sbCtx.filter = `blur(${Math.max(1, stSize * 0.45)}px)`;
-            sbCtx.drawImage(processedSrc, 0, 0);
-            sbCtx.filter = 'none';
-            LayerStylesEngine.shapeEffectAlphaCanvas(sb, stRegion, {
-              colorType: 'gradient',
-              gradientStops: st.gradientStops,
-              spread: 0,
-              range: 50,
-              contour: 'linear',
-              noise: 0
-            });
-            dCtx.drawImage(sb, 0, 0);
-          } else {
-            LayerStylesEngine.fillGradientCanvas(
+        if (st.fillType === 'gradient' && st.gradientStyle === 'shapeBurst' && burstT) {
+          // Exact Shape Burst gradient mapped by true Euclidean distance across stroke width!
+          const gLut = LayerStylesEngine.buildGradientLUT(st.gradientStops, Boolean(st.gradientReverse));
+          const img = dCtx.createImageData(stRegion.w, stRegion.h);
+          const dd = img.data;
+          for (let i = 0; i < n; i++) {
+            const sa = strokeAlpha[i];
+            if (sa <= 0.001) continue;
+            const gi = clamp8(burstT[i] * 255) * 4;
+            const o = i * 4;
+            dd[o] = gLut[gi];
+            dd[o + 1] = gLut[gi + 1];
+            dd[o + 2] = gLut[gi + 2];
+            dd[o + 3] = clamp8(sa * gLut[gi + 3]);
+          }
+          dCtx.putImageData(img, 0, 0);
+        } else {
+          // Fill Color / Gradient / Pattern, then multiply by exact strokeAlpha!
+          if (st.fillType === 'gradient') {
+            LayerStylesEngine.fillGradientRegion(
               dCtx,
+              stRegion.w,
+              stRegion.h,
+              stRegion.x,
+              stRegion.y,
               width,
               height,
               {
@@ -1784,142 +2330,338 @@ export class LayerStylesEngine {
               },
               stRegion
             );
+          } else if (st.fillType === 'pattern') {
+            const pOffX = st.patternLinkWithLayer !== false ? (bbox.x - stRegion.x + (st.patternOffsetX || 0)) : (-stRegion.x + (st.patternOffsetX || 0));
+            const pOffY = st.patternLinkWithLayer !== false ? (bbox.y - stRegion.y + (st.patternOffsetY || 0)) : (-stRegion.y + (st.patternOffsetY || 0));
+            const pat = LayerStylesEngine.createProceduralPattern(
+              dCtx,
+              st.pattern || 'stripes',
+              st.patternScale ?? 100,
+              st.patternAngle ?? 0,
+              pOffX,
+              pOffY
+            );
+            dCtx.fillStyle = pat;
+            dCtx.fillRect(0, 0, stRegion.w, stRegion.h);
+          } else {
+            dCtx.fillStyle = st.color || '#ffffff';
+            dCtx.fillRect(0, 0, stRegion.w, stRegion.h);
           }
-        } else if (st.fillType === 'pattern') {
-          const pat = LayerStylesEngine.createProceduralPattern(
-            dCtx,
-            st.pattern || 'stripes',
-            st.patternScale ?? 100,
-            st.patternAngle ?? 0
-          );
-          dCtx.fillStyle = pat;
-          dCtx.fillRect(0, 0, width, height);
-        } else {
-          dCtx.fillStyle = st.color || '#ffffff';
-          dCtx.fillRect(0, 0, width, height);
+
+          // Mask fill by exact anti-aliased strokeAlpha
+          const fillImg = dCtx.getImageData(0, 0, stRegion.w, stRegion.h);
+          const fd = fillImg.data;
+          for (let i = 0; i < n; i++) {
+            fd[i * 4 + 3] = clamp8(fd[i * 4 + 3] * strokeAlpha[i]);
+          }
+          dCtx.putImageData(fillImg, 0, 0);
         }
 
-        // Stroke Emboss when Bevel & Emboss style === 'strokeEmboss'
+        // True 3D Stroke Emboss when Bevel & Emboss style === 'strokeEmboss'
         if (idx === 0 && fx.bevelEmboss?.enabled && fx.bevelEmboss.style === 'strokeEmboss') {
-          const applyOnStroke = (bm, op, drawFn) => {
-            const ov = document.createElement('canvas');
-            ov.width = width;
-            ov.height = height;
-            const oCtx = ov.getContext('2d');
-            drawFn(oCtx);
-            oCtx.globalCompositeOperation = 'destination-in';
-            oCtx.drawImage(strokeMask, 0, 0);
-            LayerStylesEngine.compositeCanvas(dCtx, ov, bm, op, stRegion);
+          const stInnerEDT = computeInnerEDT(strokeAlpha, stRegion.w, stRegion.h);
+          const applyOnStroke = (bm, op, canvasOrFn) => {
+            const ov = canvasOrFn instanceof HTMLCanvasElement ? canvasOrFn : (() => {
+              const tc = document.createElement('canvas');
+              tc.width = stRegion.w;
+              tc.height = stRegion.h;
+              canvasOrFn(tc.getContext('2d'));
+              return tc;
+            })();
+            LayerStylesEngine.compositeRegion(dCtx, ov, 0, 0, bm, op);
           };
-          LayerStylesEngine.renderBevelInner(
+          LayerStylesEngine.renderBevelInner3D(
             fx.bevelEmboss,
             applyOnStroke,
-            strokeMask,
+            strokeAlpha,
+            stInnerEDT,
             stRegion,
-            width,
-            height,
             gAngle,
             gAltitude
           );
         }
 
         const effectiveMode = st.overprint ? 'multiply' : (st.blendMode || 'source-over');
-        LayerStylesEngine.compositeCanvas(
-          destCtx,
-          strokeMask,
+        LayerStylesEngine.compositeRegion(
+          targetCtx,
+          strokeCanvas,
+          stRegion.x,
+          stRegion.y,
           effectiveMode,
-          layerOpacity * clamp01(st.opacity ?? 1),
-          stRegion
+          layerOpacity * clamp01(st.opacity ?? 1)
         );
       }
     }
+
+    // Finalize True Photoshop RGB Channel Isolation (only write enabled R / G / B channels!)
+    if (chanWrap) {
+      const { canvas: wrapCanvas, env } = chanWrap;
+      const origImg = destCtx.getImageData(env.x, env.y, env.w, env.h);
+      const newImg = wrapCanvas.getContext('2d').getImageData(env.x, env.y, env.w, env.h);
+      const od = origImg.data;
+      const nd = newImg.data;
+      for (let i = 0; i < od.length; i += 4) {
+        if (rOn) od[i] = nd[i];
+        if (gOn) od[i + 1] = nd[i + 1];
+        if (bOn) od[i + 2] = nd[i + 2];
+        od[i + 3] = Math.max(od[i + 3], nd[i + 3]);
+      }
+      destCtx.putImageData(origImg, env.x, env.y);
+    }
   }
 
-  static renderBevelInner(bev, applyClippedFn, srcCanvas, bbox, width, height, gAngle, gAltitude) {
-    const sign = bev.direction === 'down' ? -1 : 1;
-    const angle = bev.useGlobalLight !== false ? gAngle : (bev.angle ?? 120);
-    const altitude = bev.useGlobalLight !== false ? gAltitude : (bev.altitude ?? 30);
-    const rad = (angle * Math.PI) / 180;
-    const altScale = Math.cos((altitude * Math.PI) / 180);
-    const depthMul = Math.max(0.1, Math.min(4, (bev.depth ?? 100) / 100));
-    const techSoft = bev.technique === 'chiselHard' ? 0 : bev.technique === 'chiselSoft' ? 0.35 : 0.6;
-    const sz = Math.max(1, (bev.size ?? 5) * (0.4 + 0.35 * altScale));
-    const soften = Math.max(0, (bev.soften ?? 0) + sz * techSoft * 0.25);
-    const dx = Math.cos(rad) * sz * sign;
-    const dy = -Math.sin(rad) * sz * sign;
-    const glossContour = bev.glossContour || 'linear';
+  /* ==========================================================================
+   * TRUE 3D HEIGHTFIELD + SURFACE NORMAL BEVEL & EMBOSS ENGINE
+   * Authentic Photoshop Lighting: Angle=120° (top-left light) illuminates TOP-LEFT
+   * with Highlight and casts Shadow on BOTTOM-RIGHT! Full Altitude, Depth,
+   * Technique (Smooth/Chisel Hard/Chisel Soft), Contour, Texture Bump, & Gloss!
+   * ========================================================================== */
 
-    // Optional Texture bump modulation
+  static shadeHeightfield3D(bev, heightBuf, maskAlpha, rw, rh, originX, originY, gAngle, gAltitude, flipDirection = false) {
+    const n = rw * rh;
+    const angle = bev.useGlobalLight !== false ? gAngle : (bev.angle ?? 120);
+    const altitude = clamp01((bev.useGlobalLight !== false ? gAltitude : (bev.altitude ?? 30)) / 90) * (Math.PI / 2);
+    const rad = (angle * Math.PI) / 180;
+    const dirSign = (bev.direction === 'down' ? -1 : 1) * (flipDirection ? -1 : 1);
+
+    // Optional Texture bump map perturbation of the 3D heightfield!
+    let H = heightBuf;
     if (bev.textureEnabled) {
-      const texDepth = clamp01(Math.abs(bev.textureDepth ?? 100) / 200);
-      applyClippedFn(bev.textureInvert ? 'screen' : 'overlay', texDepth * 0.65, (oCtx) => {
-        const pat = LayerStylesEngine.createProceduralPattern(
-          oCtx,
-          bev.texturePattern || 'wovenCanvas',
-          bev.textureScale ?? 100,
-          0
-        );
-        oCtx.fillStyle = pat;
-        oCtx.fillRect(0, 0, width, height);
-      });
+      const patTile = LayerStylesEngine.createPatternTileCanvas(bev.texturePattern || 'wovenCanvas', bev.textureScale ?? 100);
+      const ts = patTile.width;
+      const tData = patTile.getContext('2d').getImageData(0, 0, ts, ts).data;
+      const tDepth = Math.max(-10, Math.min(10, (bev.textureDepth ?? 100) / 100)) * 0.45 * (bev.textureInvert ? -1 : 1);
+      const offX = (bev.textureLinkWithLayer !== false ? 0 : originX) + (bev.textureOffsetX || 0);
+      const offY = (bev.textureLinkWithLayer !== false ? 0 : originY) + (bev.textureOffsetY || 0);
+      const bumped = new Float32Array(n);
+      for (let py = 0; py < rh; py++) {
+        const ty = (((py + offY) % ts) + ts) % ts;
+        const row = py * rw;
+        for (let px = 0; px < rw; px++) {
+          const tx = (((px + offX) % ts) + ts) % ts;
+          const ti = (ty * ts + tx) * 4;
+          const lum = (0.299 * tData[ti] + 0.587 * tData[ti + 1] + 0.114 * tData[ti + 2]) / 255;
+          bumped[row + px] = H[row + px] + (lum - 0.5) * tDepth;
+        }
+      }
+      H = bumped;
     }
 
-    // Highlight edge
-    applyClippedFn(bev.highlightMode || 'screen', clamp01((bev.highlightOpacity ?? 0.75) * Math.min(1.25, depthMul)), (oCtx) => {
-      const inv = LayerStylesEngine.makeInvertedSilhouette(srcCanvas, '#ffffff', width, height);
-      if (soften > 0) oCtx.filter = `blur(${soften}px)`;
-      oCtx.drawImage(inv, dx, dy);
-      oCtx.filter = 'none';
-      LayerStylesEngine.shapeEffectAlphaCanvas(oCtx.canvas, bbox, {
-        color: bev.highlightColor || '#ffffff',
-        contour: bev.contourEnabled ? (bev.contour || glossContour) : glossContour,
-        range: bev.contourEnabled ? (bev.contourRange ?? 50) : 50,
-        spread: bev.technique === 'chiselHard' ? 45 : 0,
-        noise: 0
-      });
-    });
+    // Light unit vector pointing TOWARD the light source (Canvas Y points DOWN, so -sin(rad)!)
+    // At angle=120°: lx = -0.5 (left), ly = -0.866 (up), lz = sin(30°) = 0.5
+    const cosAlt = Math.cos(altitude);
+    const lx = Math.cos(rad) * cosAlt;
+    const ly = -Math.sin(rad) * cosAlt;
+    const lz = Math.sin(altitude);
 
-    // Shadow edge
-    applyClippedFn(bev.shadowMode || 'multiply', clamp01((bev.shadowOpacity ?? 0.75) * Math.min(1.25, depthMul)), (oCtx) => {
-      const inv = LayerStylesEngine.makeInvertedSilhouette(srcCanvas, '#ffffff', width, height);
-      if (soften > 0) oCtx.filter = `blur(${soften}px)`;
-      oCtx.drawImage(inv, -dx, -dy);
-      oCtx.filter = 'none';
-      LayerStylesEngine.shapeEffectAlphaCanvas(oCtx.canvas, bbox, {
-        color: bev.shadowColor || '#000000',
-        contour: bev.contourEnabled ? (bev.contour || glossContour) : glossContour,
-        range: bev.contourEnabled ? (bev.contourRange ?? 50) : 50,
-        spread: bev.technique === 'chiselHard' ? 45 : 0,
-        noise: 0
-      });
-    });
+    const depthScale = Math.max(0.15, Math.min(14, ((bev.depth ?? 100) / 100) * 2.4)) * dirSign;
+    const glossLut = LayerStylesEngine.getContourLUT(bev.glossContour || 'linear');
+    const glossAA = Boolean(bev.glossAntiAliased);
+    const flatLit = sampleContour(glossLut, clamp01(lz), glossAA);
+
+    const [hr, hg, hb] = hexToRgb(bev.highlightColor || '#ffffff');
+    const [sr, sg, sb] = hexToRgb(bev.shadowColor || '#000000');
+
+    const hiCanvas = document.createElement('canvas');
+    hiCanvas.width = rw;
+    hiCanvas.height = rh;
+    const hiCtx = hiCanvas.getContext('2d');
+    const hiImg = hiCtx.createImageData(rw, rh);
+    const hd = hiImg.data;
+
+    const shCanvas = document.createElement('canvas');
+    shCanvas.width = rw;
+    shCanvas.height = rh;
+    const shCtx = shCanvas.getContext('2d');
+    const shImg = shCtx.createImageData(rw, rh);
+    const sd = shImg.data;
+
+    for (let py = 0; py < rh; py++) {
+      const yUp = py > 0 ? py - 1 : 0;
+      const yDn = py < rh - 1 ? py + 1 : rh - 1;
+      const row = py * rw;
+      const rowUp = yUp * rw;
+      const rowDn = yDn * rw;
+
+      for (let px = 0; px < rw; px++) {
+        const p = row + px;
+        const ma = maskAlpha[p];
+        if (ma <= 0.002) continue;
+
+        const xLt = px > 0 ? px - 1 : 0;
+        const xRt = px < rw - 1 ? px + 1 : rw - 1;
+
+        // Sobel-like smooth 3x3 surface height gradient (dH/dx, dH/dy)
+        const gx =
+          ((H[rowUp + xRt] + 2 * H[row + xRt] + H[rowDn + xRt]) -
+            (H[rowUp + xLt] + 2 * H[row + xLt] + H[rowDn + xLt])) *
+          0.125 *
+          depthScale;
+        const gy =
+          ((H[rowDn + xLt] + 2 * H[rowDn + px] + H[rowDn + xRt]) -
+            (H[rowUp + xLt] + 2 * H[rowUp + px] + H[rowUp + xRt])) *
+          0.125 *
+          depthScale;
+
+        // Skip perfectly flat interior pixels (zero bevel contribution)
+        if (Math.abs(gx) < 0.001 && Math.abs(gy) < 0.001) continue;
+
+        // Surface normal N = normalize(-gx, -gy, 1):
+        // On a raised top-left edge, H increases going right (+gx) and down (+gy),
+        // so normal points LEFT (-gx) and UP (-gy) -> aligns with light (lx<0, ly<0) -> BRIGHT HIGHLIGHT!
+        const invLen = 1 / Math.sqrt(gx * gx + gy * gy + 1);
+        const nx = -gx * invLen;
+        const ny = -gy * invLen;
+        const nz = invLen;
+
+        const ndotl = clamp01(nx * lx + ny * ly + nz * lz);
+        const lit = sampleContour(glossLut, ndotl, glossAA);
+        const delta = lit - flatLit;
+
+        const o = p * 4;
+        if (delta > 0.005) {
+          const strength = clamp01(delta / Math.max(0.15, 1 - flatLit)) * ma;
+          hd[o] = hr;
+          hd[o + 1] = hg;
+          hd[o + 2] = hb;
+          hd[o + 3] = clamp8(strength * 255);
+        } else if (delta < -0.005) {
+          const strength = clamp01(-delta / Math.max(0.15, flatLit)) * ma;
+          sd[o] = sr;
+          sd[o + 1] = sg;
+          sd[o + 2] = sb;
+          sd[o + 3] = clamp8(strength * 255);
+        }
+      }
+    }
+
+    hiCtx.putImageData(hiImg, 0, 0);
+    shCtx.putImageData(shImg, 0, 0);
+    return { hiCanvas, shCanvas };
   }
 
-  static renderBevelOuter(bev, destCtx, srcCanvas, bbox, width, height, layerOpacity, gAngle, gAltitude) {
-    const sign = (bev.direction === 'down' ? -1 : 1) * (bev.style === 'pillowEmboss' ? -1 : 1);
-    const angle = bev.useGlobalLight !== false ? gAngle : (bev.angle ?? 120);
-    const rad = (angle * Math.PI) / 180;
-    const sz = Math.max(1, (bev.size ?? 5) * 0.65);
-    const soften = Math.max(0.5, (bev.soften ?? 0) + sz * 0.25);
-    const dx = Math.cos(rad) * sz * sign;
-    const dy = -Math.sin(rad) * sz * sign;
-    const region = LayerStylesEngine.expandRegion(bbox, sz + soften + 6, width, height);
+  static renderBevelInner3D(bev, applyClippedFn, srcAlpha, innerDist, region, gAngle, gAltitude) {
+    const rw = region.w;
+    const rh = region.h;
+    const n = rw * rh;
+    const size = Math.max(1, Math.min(250, bev.size ?? 5));
+    const tech = bev.technique || 'smooth';
+    const contourLut = bev.contourEnabled ? LayerStylesEngine.getContourLUT(bev.contour || 'linear') : null;
+    const cRange = Math.max(0.05, (bev.contourRange ?? 50) / 100);
+    const cAA = Boolean(bev.contourAntiAliased);
 
-    const drawHalo = (ox, oy, color, mode, opacity) => {
-      const c = document.createElement('canvas');
-      c.width = width;
-      c.height = height;
-      const ctx = c.getContext('2d');
-      const sil = LayerStylesEngine.makeSilhouette(srcCanvas, color, width, height);
-      ctx.filter = `blur(${soften}px)`;
-      ctx.drawImage(sil, ox, oy);
-      ctx.filter = 'none';
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.drawImage(srcCanvas, 0, 0);
-      LayerStylesEngine.compositeCanvas(destCtx, c, mode, layerOpacity * clamp01(opacity), region);
-    };
+    let heightBuf = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      if (srcAlpha[i] <= 0.002) continue;
+      let t = clamp01(innerDist[i] / size);
+      if (tech === 'smooth') {
+        // Smooth rounded bevel shoulder
+        t = Math.sin(t * Math.PI * 0.5);
+      } else if (tech === 'chiselSoft') {
+        t = Math.pow(t, 0.85);
+      }
+      // Chisel Hard uses exact linear Euclidean distance pyramid!
+      if (contourLut) {
+        t = sampleContour(contourLut, clamp01(t / (cRange * 2)), cAA);
+      }
+      heightBuf[i] = t * size;
+    }
 
-    drawHalo(-dx, -dy, bev.highlightColor || '#ffffff', bev.highlightMode || 'screen', bev.highlightOpacity ?? 0.75);
-    drawHalo(dx, dy, bev.shadowColor || '#000000', bev.shadowMode || 'multiply', bev.shadowOpacity ?? 0.75);
+    // Apply Technique smoothness + Soften (0..16px) to the heightfield
+    const techSoft = tech === 'chiselHard' ? 0 : tech === 'chiselSoft' ? Math.min(2.5, size * 0.14) : Math.min(6, size * 0.28);
+    const totalSoft = (bev.soften ?? 0) * 0.65 + techSoft;
+    if (totalSoft > 0.15) {
+      heightBuf = blurFloatBuffer(heightBuf, rw, rh, totalSoft, 0);
+    }
+
+    const { hiCanvas, shCanvas } = LayerStylesEngine.shadeHeightfield3D(
+      bev,
+      heightBuf,
+      srcAlpha,
+      rw,
+      rh,
+      region.x,
+      region.y,
+      gAngle,
+      gAltitude,
+      false
+    );
+
+    applyClippedFn(bev.highlightMode || 'screen', clamp01(bev.highlightOpacity ?? 0.75), hiCanvas);
+    applyClippedFn(bev.shadowMode || 'multiply', clamp01(bev.shadowOpacity ?? 0.75), shCanvas);
+  }
+
+  static renderBevelOuter3D(bev, destCtx, getAlphaInRegion, bbox, width, height, layerOpacity, gAngle, gAltitude) {
+    const size = Math.max(1, Math.min(250, bev.size ?? 5));
+    const soften = bev.soften ?? 0;
+    const pad = Math.ceil(size + soften + 6);
+    const region = LayerStylesEngine.expandRegion(bbox, pad, width, height);
+    const rw = region.w;
+    const rh = region.h;
+    const n = rw * rh;
+    const srcAlpha = getAlphaInRegion(region);
+    const dOut = computeOuterEDT(srcAlpha, rw, rh);
+    const tech = bev.technique || 'smooth';
+    const contourLut = bev.contourEnabled ? LayerStylesEngine.getContourLUT(bev.contour || 'linear') : null;
+    const cRange = Math.max(0.05, (bev.contourRange ?? 50) / 100);
+    const cAA = Boolean(bev.contourAntiAliased);
+
+    let heightBuf = new Float32Array(n);
+    const maskAlpha = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const a0 = srcAlpha[i];
+      if (a0 >= 0.999) {
+        heightBuf[i] = size;
+        maskAlpha[i] = 0;
+      } else {
+        const d = dOut[i];
+        if (d < size + 1.5) {
+          let t = clamp01(1 - d / size);
+          if (tech === 'smooth') t = t * t * (3 - 2 * t);
+          if (contourLut) t = sampleContour(contourLut, clamp01(t / (cRange * 2)), cAA);
+          heightBuf[i] = t * size;
+          const outerFade = clamp01((size - d) / Math.max(1.5, size * 0.25));
+          maskAlpha[i] = outerFade * (1 - a0);
+        }
+      }
+    }
+
+    const techSoft = tech === 'chiselHard' ? 0 : tech === 'chiselSoft' ? Math.min(2.5, size * 0.14) : Math.min(5, size * 0.25);
+    const totalSoft = soften * 0.65 + techSoft;
+    if (totalSoft > 0.15) {
+      heightBuf = blurFloatBuffer(heightBuf, rw, rh, totalSoft, 0);
+    }
+
+    // Pillow Emboss reverses the outer ramp slope to create the classic recessed outer trench!
+    const flipOuter = bev.style === 'pillowEmboss';
+    const { hiCanvas, shCanvas } = LayerStylesEngine.shadeHeightfield3D(
+      bev,
+      heightBuf,
+      maskAlpha,
+      rw,
+      rh,
+      region.x,
+      region.y,
+      gAngle,
+      gAltitude,
+      flipOuter
+    );
+
+    LayerStylesEngine.compositeRegion(
+      destCtx,
+      hiCanvas,
+      region.x,
+      region.y,
+      bev.highlightMode || 'screen',
+      layerOpacity * clamp01(bev.highlightOpacity ?? 0.75)
+    );
+    LayerStylesEngine.compositeRegion(
+      destCtx,
+      shCanvas,
+      region.x,
+      region.y,
+      bev.shadowMode || 'multiply',
+      layerOpacity * clamp01(bev.shadowOpacity ?? 0.75)
+    );
   }
 }
